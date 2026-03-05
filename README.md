@@ -1,28 +1,27 @@
 # ✈️ Airport Management Database (MySQL 8)
 
 > **Proyecto:** Aerolínea – Sistema de Gestión de Vuelos, Reservas y Operaciones  
-> **Tecnología:** MySQL 8.x  
+> **Motor:** MySQL 8.x  
 > **Autor:** Agustín Tejero  
-> **Diseño:** Modelo Entidad–Relación normalizado (3FN) + auditoría + eliminación lógica (soft delete)
+> **Diseño:** ERD normalizado (3FN) + auditoría + eliminación lógica (soft delete)
 
-Tech stack / Topics:MySQL, SQL, Relational Modeling, Normalization (3NF), ERD, Indexes, Constraints (PK/FK), RBAC (roles & permissions), Stored Procedures, Triggers, Views, Audit Fields, Soft Delete.
+## Tecnologías
+MySQL 8 · SQL · Modelado relacional · 3NF · ERD · PK/FK · Índices · RBAC · Vistas · Stored Procedures · Triggers · Auditoría · Soft Delete
 
 ---
 
 ## ✅ Highlights técnicos
 
-- **Modelo relacional 3FN** orientado a operaciones de aerolínea (vuelos, rutas, flota, reservas, tickets).
-- **RBAC**: roles, permisos y asignación (`rol`, `permiso`, `rol_permiso`).
+- **Modelo 3FN** orientado a operación real: flota, rutas, vuelos, reservas, asientos y ticketing.
+- **RBAC**: roles/permisos (`rol`, `permiso`, `rol_permiso`).
 - **Auditoría estándar** en tablas: `creado_en`, `actualizado_en`, `eliminado_en` + `creado_por`, `actualizado_por`, `eliminado_por`.
-- **Soft delete**: trazabilidad sin pérdida de histórico.
-- **Integridad referencial** con FKs + validaciones de negocio (según scripts del repo).
-- **Scripts separados** (tablas / inserts / diagramas) para inspección rápida.
+- **Soft delete** para trazabilidad sin perder histórico.
+- **Integridad referencial** con FKs e índices para consistencia y performance.
+- **Ejecución reproducible con Docker** (schema + seed + views + functions + procedures + triggers).
 
 ---
 
 ## 🗺️ Diagrama ERD
-
-> Archivo: `docs/erd.png`
 
 ![ERD - Airport Management Database](docs/erd.png)
 
@@ -30,65 +29,58 @@ Tech stack / Topics:MySQL, SQL, Relational Modeling, Normalization (3NF), ERD, I
 
 ## 📘 Resumen funcional
 
-Este modelo de base de datos implementa la estructura fundamental de un **sistema de gestión de vuelos comerciales**, permitiendo administrar:
+El esquema `Aerolinea` cubre las piezas base de una aerolínea:
 
-- Identidad y autenticación de usuarios.
-- Roles y permisos.
-- Datos personales, documentación y contacto de pasajeros.
-- Infraestructura aeroportuaria (países, aeropuertos, terminales, puertas).
-- Flota de aeronaves y sus modelos.
-- Rutas, tarifas, promociones y vuelos.
-- Reservas, boletos y control de asientos por vuelo.
+- Identidad de usuarios y control de accesos.
+- Catálogos geográficos y estructura aeroportuaria (países, aeropuertos, terminales, puertas).
+- Flota (modelos, aeronaves, asientos, configuración de cabina).
+- Operación (rutas, vuelos, estado de asientos por vuelo).
+- Comercial (tarifas, promociones).
+- Venta y post-venta (reservas, pasajeros asociados, boletos).
 
 ---
 
 ## 🗂️ Tablas principales (por módulo)
 
-| Módulo | Tabla | Descripción |
+| Módulo | Tablas | Notas |
 |---|---|---|
-| Seguridad y Accesos | `usuario` | Cuentas del sistema (email, hash, bloqueo, verificación). |
-|  | `rol` | Roles base (Administrador, Piloto, Pasajero, etc.). |
-|  | `permiso` | Acciones permitidas en el sistema. |
-|  | `rol_permiso` | Asignación de permisos a roles. |
-| Identidad Personal | `persona` | Datos básicos (nombre, apellido). |
-|  | `direccion` | Domicilios vinculados a personas. |
-|  | `telefono` | Teléfonos personales o laborales. |
-|  | `documentacion` | Documentos de identidad (DNI, pasaporte, etc.). |
-| Geografía y Aeropuertos | `pais` | Catálogo de países. |
-|  | `aeropuerto` | Aeropuertos y coordenadas. |
-|  | `terminal` | Terminales dentro de un aeropuerto. |
-|  | `puerta` | Puertas de embarque. |
-| Flota y Configuración | `modelo_aeronave` | Modelos técnicos de aeronaves. |
-|  | `configuracion_cabina` | Plantillas de disposición de asientos por clase. |
-|  | `aeronave` | Aeronaves registradas y su estado operativo. |
-|  | `asiento` | Asientos físicos dentro de una aeronave. |
-| Operación y Tarifas | `ruta` | Tramos origen–destino. |
-|  | `tarifa` | Tarifas por clase y vigencia. |
-|  | `promocion` | Descuentos o condiciones especiales sobre tarifas. |
-| Operaciones de Vuelo | `vuelo` | Programación de vuelos con aeronave y ruta. |
-|  | `asiento_vuelo` | Estado de asientos por vuelo. |
-| Reservas y Ventas | `reserva` | Encabezado de reservas, totales y estado. |
-|  | `reserva_persona` | Pasajeros dentro de una reserva. |
-|  | `boleto` | Boleto emitido por pasajero y vuelo. |
+| Seguridad y accesos | `usuario`, `rol`, `permiso`, `rol_permiso` | Auth + autorización por roles. |
+| Identidad | `persona`, `direccion`, `telefono`, `documentacion` | Datos personales y contacto. |
+| Aeropuertos | `pais`, `aeropuerto`, `terminal`, `puerta` | Infraestructura. |
+| Flota | `modelo_aeronave`, `aeronave`, `asiento`, `configuracion_cabina` | Aeronaves y cabina. |
+| Operación | `ruta`, `vuelo`, `asiento_vuelo` | Planificación y disponibilidad. |
+| Comercial | `tarifa`, `promocion` | Precios/beneficios. |
+| Reservas & ticketing | `reserva`, `reserva_persona`, `boleto` | Reserva → asiento → boleto. |
+| Tripulación | `tripulacion`, `tripulacion_miembro`, `rango_tripulacion` | Estructura y asignación. |
 
 ---
 
-## 🔄 Caso de uso típico (end-to-end)
+## 🔄 Flujo típico (end-to-end)
 
-1. **Autenticación**: un `usuario` inicia sesión según su `rol`.  
-2. **Gestión personal**: se vincula `persona`, `direccion`, `telefono`, `documentacion`.  
-3. **Búsqueda**: consulta `ruta` + `vuelo` disponibles.  
-4. **Selección**: aplica `tarifa` y `promocion` si corresponde.  
-5. **Reserva**: crea `reserva` y asocia pasajeros en `reserva_persona`.  
-6. **Asiento**: marca el asiento en `asiento_vuelo` como `RESERVADO`.  
-7. **Ticketing**: emite `boleto` para pasajero/vuelo/asiento.  
-8. **Auditoría**: queda trazabilidad en campos `*_en` y `*_por`.
+1. Un `usuario` opera según su `rol`.
+2. Vincula identidad: `persona`, `direccion`, `telefono`, `documentacion`.
+3. Consulta rutas/vuelos: `ruta` + `vuelo`.
+4. Define condiciones comerciales: `tarifa` + `promocion`.
+5. Genera `reserva` y pasajeros en `reserva_persona`.
+6. Reserva asiento en `asiento_vuelo` (estado).
+7. Emite `boleto` asociado a vuelo/pasajero/asiento.
+8. Todas las operaciones quedan auditadas (`*_en`, `*_por`) y con soft delete (`eliminado_en`).
 
 ---
 
-## ⚙️ Cómo ejecutar (MySQL 8 / Workbench)
+## 🐳 Ejecución con Docker (recomendado)
 
-### Opción A — MySQL Workbench
-1. Crear el esquema (por ejemplo `Aerolinea`) si no existe:
-   ```sql
-   CREATE DATABASE IF NOT EXISTS Aerolinea;
+### Requisitos
+- Docker + Docker Compose
+
+### Iniciar docker y desde la raiz del proyecto levantar la base
+
+- docker compose up -d
+- docker compose logs -f db
+  ### Luego en otra terminal podes ejecutar los scripts:
+   - bash scripts/smoke-test.sh
+   - bash scripts/db-shell.sh   
+
+### 1) Configurar entorno
+```bash
+cp .env.example .env
