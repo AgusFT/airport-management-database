@@ -1,0 +1,179 @@
+USE Aerolinea;
+
+-- =========================================================
+-- TEST ABM: TARIFA & PROMOCION
+-- Procedimiento: Aerolinea.sp_abm_tarifa_promocion
+-- =========================================================
+
+/* Auditor (idusuario válido en tu base) */
+SET @auditor := 1;
+
+/* Descubrir IDs reales de las 4 tarifas por nombre (ENUMs existentes) */
+SELECT idtarifa INTO @id_pc  FROM Aerolinea.tarifa WHERE nombre = 'Primera clase'   AND eliminado_en IS NULL LIMIT 1;
+SELECT idtarifa INTO @id_ej  FROM Aerolinea.tarifa WHERE nombre = 'Ejecutivo'       AND eliminado_en IS NULL LIMIT 1;
+SELECT idtarifa INTO @id_ep  FROM Aerolinea.tarifa WHERE nombre = 'Economica plus'  AND eliminado_en IS NULL LIMIT 1;
+SELECT idtarifa INTO @id_ec  FROM Aerolinea.tarifa WHERE nombre = 'Economica'       AND eliminado_en IS NULL LIMIT 1;
+
+SELECT 'TARIFAS DETECTADAS' AS info, @id_pc AS id_pc, @id_ej AS id_ej, @id_ep AS id_ep, @id_ec AS id_ec;
+
+/* =========================================================
+   1) PROMOCION - ALTA (para 'Economica plus')
+   Creamos un nombre único con timestamp para evitar conflictos
+   ========================================================= */
+SET @promo_name := CONCAT('EP-PRUEBA-', DATE_FORMAT(NOW(), '%Y%m%d%H%i%s'));
+SET @out_tarifa := NULL;
+SET @out_promo  := NULL;
+
+CALL Aerolinea.sp_abm_tarifa_promocion(
+  /* p_tipo, p_accion */              'PROMO','A',
+
+  /* ===== TARIFA params (no aplican) ===== */
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+
+  /* ===== PROMOCION params ===== */
+  NULL,                    -- p_idpromocion
+  @promo_name,             -- p_promo_nombre (único)
+  'Promo de prueba ABM',   -- p_promo_descripcion
+  9,                       -- p_promo_valor (0..100)
+  1,                       -- p_promo_activo
+  @id_ep,                  -- p_promo_tarifa_id (Economica plus)
+
+  /* Auditoría */
+  @auditor,
+
+  /* OUTs */
+  @out_tarifa, @out_promo
+);
+
+SELECT 'PROMO ALTA -> OUTs' AS paso, @out_tarifa AS tarifa_id, @out_promo AS promo_id;
+SELECT * FROM Aerolinea.promocion WHERE idpromocion = @out_promo;
+
+/* =========================================================
+   2) PROMOCION - MODIFICAR (misma promo recién creada)
+   ========================================================= */
+SET @out_tarifa := NULL;
+SET @out_promo_out := NULL;
+
+CALL Aerolinea.sp_abm_tarifa_promocion(
+  /* p_tipo, p_accion */              'PROMO','M',
+
+  /* ===== TARIFA params (no aplican) ===== */
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+
+  /* ===== PROMOCION params ===== */
+  @out_promo,             -- p_idpromocion
+  CONCAT(@promo_name,'-EDIT'),  -- nuevo nombre (sigue único)
+  'Promo editada por test ABM',
+  12,                      -- nuevo valor
+  1,                       -- activo
+  @id_ep,                  -- misma tarifa
+
+  /* Auditoría */
+  @auditor,
+
+  /* OUTs */
+  @out_tarifa, @out_promo_out
+);
+
+SELECT 'PROMO MODIFICAR -> OUTs' AS paso, @out_tarifa AS tarifa_id, @out_promo_out AS promo_id;
+SELECT * FROM Aerolinea.promocion WHERE idpromocion = @out_promo_out;
+
+/* =========================================================
+   3) PROMOCION - BAJA (soft delete) de la promo creada
+   ========================================================= */
+SET @out_tarifa := NULL;
+SET @out_promo_baja := NULL;
+
+CALL Aerolinea.sp_abm_tarifa_promocion(
+  /* p_tipo, p_accion */              'PROMO','B',
+
+  /* ===== TARIFA params (no aplican) ===== */
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+
+  /* ===== PROMOCION params ===== */
+  @out_promo_out,         -- p_idpromocion
+  NULL, NULL, NULL, NULL, NULL,
+
+  /* Auditoría */
+  @auditor,
+
+  /* OUTs */
+  @out_tarifa, @out_promo_baja
+);
+
+SELECT 'PROMO BAJA -> OUTs' AS paso, @out_tarifa AS tarifa_id, @out_promo_baja AS promo_id;
+SELECT idpromocion, nombre, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.promocion
+WHERE idpromocion = @out_promo_baja;
+
+/* =========================================================
+   4) TARIFA - MODIFICAR ('Economica plus')
+   Ajustamos precio, impuesto y condiciones
+   ========================================================= */
+SET @out_tarifa_mod := NULL;
+SET @dummy := NULL;
+
+CALL Aerolinea.sp_abm_tarifa_promocion(
+  /* p_tipo, p_accion */              'TARIFA','M',
+
+  /* ===== TARIFA params ===== */
+  @id_ep,                 -- p_idtarifa
+  NULL,                   -- p_tarifa_nombre (no lo cambiamos)
+  182500.00,              -- p_precio (nuevo)
+  19.50,                  -- p_impuesto (nuevo)
+  9400.00,                -- p_tasa_fija (nuevo)
+  NULL,                   -- p_tarifacol
+  '2025-01-01',           -- p_vigencia_desde (sin cambios efectivos)
+  '2025-12-31',           -- p_vigencia_hasta
+  1,                      -- p_activo
+  'Condiciones ajustadas por test ABM', -- p_condiciones
+
+  /* ===== PROMO params (no aplican) ===== */
+  NULL,NULL,NULL,NULL,NULL,NULL,
+
+  /* Auditoría */
+  @auditor,
+
+  /* OUTs */
+  @out_tarifa_mod, @dummy
+);
+
+SELECT 'TARIFA MODIFICAR -> OUT' AS paso, @out_tarifa_mod AS idtarifa;
+SELECT * FROM Aerolinea.tarifa WHERE idtarifa = @out_tarifa_mod;
+
+/* =========================================================
+   5) TARIFA - BAJA (soft delete) de 'Economica'
+   Elegimos 'Economica' porque tus reservas/promo que usaste
+   apuntan a otras clases; así evitamos impactos colaterales.
+   Además, el SP inactiva las promos de esa tarifa (si existieran).
+   ========================================================= */
+SET @out_tarifa_baja := NULL;
+SET @dummy := NULL;
+
+CALL Aerolinea.sp_abm_tarifa_promocion(
+  /* p_tipo, p_accion */              'TARIFA','B',
+
+  /* ===== TARIFA params ===== */
+  @id_ec,      -- p_idtarifa (Economica)
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+
+  /* ===== PROMO params (no aplican) ===== */
+  NULL,NULL,NULL,NULL,NULL,NULL,
+
+  /* Auditoría */
+  @auditor,
+
+  /* OUTs */
+  @out_tarifa_baja, @dummy
+);
+
+SELECT 'TARIFA BAJA -> OUT' AS paso, @out_tarifa_baja AS idtarifa;
+SELECT idtarifa, nombre, activo, eliminado_en, eliminado_motivio
+FROM Aerolinea.tarifa
+WHERE idtarifa = @out_tarifa_baja;
+
+/* Si existieran promos ligadas a 'Economica', quedarán inactivas */
+SELECT idpromocion, nombre, activo, eliminado_en
+FROM Aerolinea.promocion
+WHERE tarifa_idtarifa = @out_tarifa_baja
+ORDER BY idpromocion;

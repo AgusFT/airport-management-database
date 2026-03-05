@@ -1,0 +1,250 @@
+USE Aerolinea;
+
+-- =========================================================
+-- PRUEBAS ABM PASAJEROS (ALTA / MODIFICAR / BAJA)
+-- Requisitos:
+--  - Rol 'pasajero' (id 21)
+--  - País 'AR' existe
+--  - Usuario auditor válido (usamos 1)
+--  - Procedimiento: Aerolinea.sp_abm_pasajero (50 params)
+-- =========================================================
+
+/* ---------- Utilidades de sesión ---------- */
+SET @auditor := 1;
+
+-- ================================
+-- 1) ALTA (A) - pasajero de prueba
+-- ================================
+SET @out_user := NULL;
+SET @out_person := NULL;
+
+CALL Aerolinea.sp_abm_pasajero(
+  /*  1 */ 'A',
+  /*  2 */ NULL,                -- p_idusuario
+  /*  3 */ NULL,                -- p_idpersona
+
+  /* Persona */
+  /*  4 */ 'PruebaABM',
+  /*  5 */ 'Pasajero',
+  /*  6 */ '1990-02-20',
+
+  /* Usuario */
+  /*  7 */ 'prueba.abm+01@lamontana.com.ar',     -- email
+  /*  8 */ 'PRUEBA.ABM+01@LAMONTANA.COM.AR',     -- email_norm
+  /*  9 */ x'DEADBEEF',                          -- password_hash (dummy)
+  /* 10 */ 'bcrypt',                             -- password_algoritmo
+  /* 11 */ NOW(),                                -- password_actualizado_en
+  /* 12 */ 0,                                    -- verificacion_email
+  /* 13 */ NULL,                                 -- verificacion_token_hash
+  /* 14 */ NULL,                                 -- verificacion_expira
+  /* 15 */ NULL,                                 -- reset_token_hash
+  /* 16 */ NULL,                                 -- reset_expira
+  /* 17 */ NULL,                                 -- intentos_fallidos
+  /* 18 */ NULL,                                 -- bloqueado_hasta
+  /* 19 */ NULL,                                 -- ultimo_acceso_en
+  /* 20 */ NULL,                                 -- usuariocol
+
+  /* Dirección (crea principal) */
+  /* 21 */ NULL,                                 -- p_iddireccion
+  /* 22 */ 'Domicilio',
+  /* 23 */ 'AR',
+  /* 24 */ 'Buenos Aires',
+  /* 25 */ 'CABA',
+  /* 26 */ '1001',
+  /* 27 */ 'Av. Siempre Viva',
+  /* 28 */ '742',
+  /* 29 */ '1',
+  /* 30 */ 'A',
+  /* 31 */ 'Alta creada por script de prueba',
+  /* 32 */ 1,                                    -- es_principal
+
+  /* Teléfono (crea principal) */
+  /* 33 */ NULL,                                 -- p_idtelefono
+  /* 34 */ 'movil',
+  /* 35 */ '+5491100000001',
+  /* 36 */ 1,                                    -- es_whatssap
+  /* 37 */ NULL,                                 -- extension
+  /* 38 */ 1,                                    -- es_principal
+
+  /* Documentación (crea una) */
+  /* 39 */ NULL,                                 -- p_iddocumentacion
+  /* 40 */ 'DNI',
+  /* 41 */ '40000001',
+  /* 42 */ 'AR',
+  /* 43 */ 'VALIDO',
+  /* 44 */ 'RENAPER',
+  /* 45 */ '2018-01-01 00:00:00',
+  /* 46 */ '2030-01-01 00:00:00',
+  /* 47 */ 'Doc de prueba ABM',
+
+  /* Auditoría */
+  /* 48 */ @auditor,
+
+  /* OUTs */
+  /* 49 */ @out_user,
+  /* 50 */ @out_person
+);
+
+SELECT 'ALTA -> IDs creados' AS paso, @out_person AS persona_id, @out_user AS usuario_id;
+
+-- Verificaciones rápidas (ALTA)
+SELECT p.*   FROM Aerolinea.persona       p   WHERE p.idpersona=@out_person LIMIT 1;
+SELECT u.*   FROM Aerolinea.usuario       u   WHERE u.idusuario=@out_user   LIMIT 1;
+SELECT d.*   FROM Aerolinea.direccion     d   WHERE d.persona_idpersona=@out_person;
+SELECT t.*   FROM Aerolinea.telefono      t   WHERE t.persona_idpersona=@out_person;
+SELECT doc.* FROM Aerolinea.documentacion doc WHERE doc.persona_idpersona=@out_person;
+
+-- ===============================================
+-- 2) MODIFICAR (M) - pasajera real (id 2 / persona 2)
+--    (si querés otra persona, cambiá estos dos IDs)
+-- ===============================================
+SET @usr_real := 2;
+SET @per_real := 2;
+
+CALL Aerolinea.sp_abm_pasajero(
+  /*  1 */ 'M',
+  /*  2 */ @usr_real,          -- p_idusuario
+  /*  3 */ @per_real,          -- p_idpersona
+
+  /* Persona */
+  /*  4 */ 'Camila Renata',
+  /*  5 */ 'Fernandez',
+  /*  6 */ '1992-08-25',
+
+  /* Usuario */
+  /*  7 */ 'camila.fernandez@outlook.com',
+  /*  8 */ 'CAMILA.FERNANDEZ@OUTLOOK.COM',
+  /*  9 */ x'ABCD1234',
+  /* 10 */ 'bcrypt',
+  /* 11 */ NOW(),
+  /* 12 */ 1,
+  /* 13 */ NULL,
+  /* 14 */ NULL,
+  /* 15 */ NULL,
+  /* 16 */ NULL,
+  /* 17 */ NULL,
+  /* 18 */ NULL,
+  /* 19 */ NULL,
+  /* 20 */ NULL,
+
+  /* Dirección (actualiza principal o inserta si no hay) */
+  /* 21 */ NULL,               -- iddireccion (NULL => principal)
+  /* 22 */ 'Domicilio',
+  /* 23 */ 'AR',
+  /* 24 */ 'Buenos Aires',
+  /* 25 */ 'La Plata',
+  /* 26 */ '1900',
+  /* 27 */ 'Calle 50',
+  /* 28 */ '999',
+  /* 29 */ '7',
+  /* 30 */ 'B',
+  /* 31 */ 'Actualizada por prueba MODIFICAR',
+  /* 32 */ 1,
+
+  /* Teléfono (actualiza principal o inserta) */
+  /* 33 */ NULL,               -- idtelefono
+  /* 34 */ 'movil',
+  /* 35 */ '+5492215550000',
+  /* 36 */ 1,
+  /* 37 */ NULL,
+  /* 38 */ 1,
+
+  /* Documentación (inserta nueva) */
+  /* 39 */ NULL,               -- iddocumentacion
+  /* 40 */ 'DNI',
+  /* 41 */ '35123456',
+  /* 42 */ 'AR',
+  /* 43 */ 'VALIDO',
+  /* 44 */ 'RENAPER',
+  /* 45 */ '2019-02-02 00:00:00',
+  /* 46 */ '2031-02-02 00:00:00',
+  /* 47 */ 'Renovación por actualización de datos',
+
+  /* Auditoría */
+  /* 48 */ @auditor,
+
+  /* OUTs (opcionales) */
+  /* 49 */ @out_user2,
+  /* 50 */ @out_person2
+);
+
+-- Verificaciones (MODIFICAR)
+SELECT p.*   FROM Aerolinea.persona        p   WHERE p.idpersona=@per_real;
+SELECT u.*   FROM Aerolinea.usuario        u   WHERE u.idusuario=@usr_real;
+SELECT d.*   FROM Aerolinea.direccion      d   WHERE d.persona_idpersona=@per_real ORDER BY d.iddireccion DESC;
+SELECT t.*   FROM Aerolinea.telefono       t   WHERE t.persona_idpersona=@per_real ORDER BY t.idtelefono  DESC;
+SELECT doc.* FROM Aerolinea.documentacion  doc WHERE doc.persona_idpersona=@per_real ORDER BY doc.iddocumentacion DESC;
+
+-- ===========================================
+-- 3) BAJA (B) - del pasajero de prueba (ALTA)
+-- ===========================================
+CALL Aerolinea.sp_abm_pasajero(
+  /*  1 */ 'B',
+  /*  2 */ @out_user,          -- p_idusuario creado en ALTA
+  /*  3 */ @out_person,        -- p_idpersona creado en ALTA
+
+  /* Persona (ignorado) */
+  /*  4 */ NULL,
+  /*  5 */ NULL,
+  /*  6 */ NULL,
+
+  /* Usuario (ignorado) */
+  /*  7 */ NULL,
+  /*  8 */ NULL,
+  /*  9 */ NULL,
+  /* 10 */ NULL,
+  /* 11 */ NULL,
+  /* 12 */ NULL,
+  /* 13 */ NULL,
+  /* 14 */ NULL,
+  /* 15 */ NULL,
+  /* 16 */ NULL,
+  /* 17 */ NULL,
+  /* 18 */ NULL,
+  /* 19 */ NULL,
+  /* 20 */ NULL,
+
+  /* Dirección (ignorado) */
+  /* 21 */ NULL,
+  /* 22 */ NULL,
+  /* 23 */ NULL,
+  /* 24 */ NULL,
+  /* 25 */ NULL,
+  /* 26 */ NULL,
+  /* 27 */ NULL,
+  /* 28 */ NULL,
+  /* 29 */ NULL,
+  /* 30 */ NULL,
+  /* 31 */ NULL,
+  /* 32 */ NULL,
+
+  /* Teléfono (ignorado) */
+  /* 33 */ NULL,
+  /* 34 */ NULL,
+  /* 35 */ NULL,
+  /* 36 */ NULL,
+  /* 37 */ NULL,
+  /* 38 */ NULL,
+
+  /* Documentación (ignorado) */
+  /* 39 */ NULL,
+  /* 40 */ NULL,
+  /* 41 */ NULL,
+  /* 42 */ NULL,
+  /* 43 */ NULL,
+  /* 44 */ NULL,
+  /* 45 */ NULL,
+  /* 46 */ NULL,
+  /* 47 */ NULL,
+
+  /* Auditoría */
+  /* 48 */ @auditor,
+
+  /* OUTs */
+  /* 49 */ @out_user_baja,
+  /* 50 */ @out_person_baja
+);
+
+-- Verificaciones (BAJA)
+SELECT p.* FROM Aerolinea.persona p WHERE p.idpersona=@out_person;
+SELECT u.* FROM Aerolinea.usuario u WHERE u.idusuario=@out_user;

@@ -819,7 +819,7 @@ CREATE TABLE IF NOT EXISTS `Aerolinea`.`promocion` (
   `descripcion` VARCHAR(200) NULL,
   `valor` SMALLINT NOT NULL,
   `activo` TINYINT NOT NULL,
-  `tarifa_idtarifa` INT NOT NULL,
+  `tarifa_idtarifa` INT NULL,
   `creado_en` DATETIME NULL,
   `actualizado_en` DATETIME NULL,
   `eliminado_en` DATETIME NULL,

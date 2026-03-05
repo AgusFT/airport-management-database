@@ -88,11 +88,7 @@ Este modelo de base de datos implementa la estructura fundamental de un **sistem
 
 ## ⚙️ Cómo ejecutar (MySQL 8 / Workbench)
 
-> ⚠️ **Nota importante sobre el esquema (`schema`)**  
-> Tus scripts pueden usar un esquema como `mydb` (o el que tengas definido).  
-> **Usá el mismo nombre que figure en tus archivos SQL** o ajustalo con búsqueda/reemplazo.
-
 ### Opción A — MySQL Workbench
-1. Crear el esquema (por ejemplo `mydb`) si no existe:
+1. Crear el esquema (por ejemplo `Aerolinea`) si no existe:
    ```sql
-   CREATE DATABASE IF NOT EXISTS mydb;
+   CREATE DATABASE IF NOT EXISTS Aerolinea;

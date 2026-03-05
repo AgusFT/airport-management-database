@@ -1,0 +1,1634 @@
+USE Aerolinea;
+
+DELIMITER $$
+
+CREATE PROCEDURE Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+    IN  p_tipo        ENUM('AEROPUERTO','TERMINAL','PUERTA'),
+    IN  p_accion      CHAR(1),   -- 'A' (Alta), 'M' (Modificar), 'B' (Baja lógica)
+
+    /* ======== CAMPOS AEROPUERTO ======== */
+    IN  p_id_aeropuerto INT,
+    IN  p_tag           VARCHAR(3),
+    IN  p_nombre        VARCHAR(150),
+    IN  p_ciudad        VARCHAR(120),
+    IN  p_latitud       DECIMAL(9,6),
+    IN  p_longitud      DECIMAL(9,6),
+    IN  p_huso_horario  VARCHAR(45),
+    IN  p_activo        TINYINT,
+
+    /* ======== CAMPOS TERMINAL ======== */
+    IN  p_id_terminal   INT,
+    IN  p_terminal_nombre VARCHAR(60),
+    IN  p_terminal_activo TINYINT,
+    IN  p_terminal_aeropuerto_id INT,
+
+    /* ======== CAMPOS PUERTA ======== */
+    IN  p_id_puerta     INT,
+    IN  p_puerta_codigo VARCHAR(10),
+    IN  p_puerta_activo TINYINT,
+    IN  p_puerta_aeropuerto_id INT,
+
+    /* ======== AUDITORÍA ======== */
+    IN  p_usuario_app   INT,
+
+    /* ======== OUTS ======== */
+    OUT p_out_id_aeropuerto INT,
+    OUT p_out_id_terminal   INT,
+    OUT p_out_id_puerta     INT
+)
+BEGIN
+    DECLARE v_now DATETIME DEFAULT NOW();
+    DECLARE v_tmp INT DEFAULT 0;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error en sp_abm_aeropuerto_terminal_puerta';
+    END;
+
+    START TRANSACTION;
+
+    IF p_tipo NOT IN ('AEROPUERTO','TERMINAL','PUERTA') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Tipo inválido';
+    END IF;
+
+    IF p_accion NOT IN ('A','M','B') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Acción inválida (use A/M/B)';
+    END IF;
+
+    /* ==========================================================
+       BLOQUE AEROPUERTO
+       ========================================================== */
+    IF p_tipo = 'AEROPUERTO' THEN
+        IF p_accion = 'A' THEN
+            -- Validar tag único
+            SELECT COUNT(*) INTO v_tmp
+            FROM Aerolinea.aeropuerto
+            WHERE tag = p_tag AND eliminado_en IS NULL;
+            IF v_tmp > 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El tag de aeropuerto ya existe';
+            END IF;
+
+            INSERT INTO Aerolinea.aeropuerto
+                (tag, nombre, ciudad, latitud, longitud, huso_horario, activo,
+                 creado_en, actualizado_en, eliminado_en,
+                 creado_por, actualizado_por, eliminado_por, eliminado_motivo)
+            VALUES
+                (p_tag, p_nombre, p_ciudad, p_latitud, p_longitud, p_huso_horario, COALESCE(p_activo,1),
+                 v_now, v_now, NULL,
+                 p_usuario_app, p_usuario_app, NULL, NULL);
+
+            SET p_out_id_aeropuerto = LAST_INSERT_ID();
+            SET p_out_id_terminal = NULL;
+            SET p_out_id_puerta = NULL;
+
+        ELSEIF p_accion = 'M' THEN
+            UPDATE Aerolinea.aeropuerto
+            SET nombre = COALESCE(p_nombre, nombre),
+                ciudad = COALESCE(p_ciudad, ciudad),
+                latitud = COALESCE(p_latitud, latitud),
+                longitud = COALESCE(p_longitud, longitud),
+                huso_horario = COALESCE(p_huso_horario, huso_horario),
+                activo = COALESCE(p_activo, activo),
+                actualizado_en = v_now,
+                actualizado_por = p_usuario_app
+            WHERE idaeropuerto = p_id_aeropuerto;
+
+            IF ROW_COUNT() = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Aeropuerto no encontrado o sin cambios';
+            END IF;
+
+            SET p_out_id_aeropuerto = p_id_aeropuerto;
+            SET p_out_id_terminal = NULL;
+            SET p_out_id_puerta = NULL;
+
+        ELSE
+            UPDATE Aerolinea.aeropuerto
+            SET eliminado_en = v_now,
+                eliminado_por = p_usuario_app,
+                eliminado_motivo = 'Baja lógica aeropuerto',
+                activo = 0
+            WHERE idaeropuerto = p_id_aeropuerto;
+
+            IF ROW_COUNT() = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Aeropuerto no encontrado';
+            END IF;
+
+            -- Inactivar terminales y puertas dependientes
+            UPDATE Aerolinea.terminal
+            SET activo = 0, eliminado_en = v_now, eliminado_por = p_usuario_app,
+                eliminado_motivo = 'Aeropuerto dado de baja'
+            WHERE aeropuerto_idaeropuerto = p_id_aeropuerto;
+
+            UPDATE Aerolinea.puerta
+            SET activo = 0, eliminado_en = v_now, eliminado_por = p_usuario_app,
+                eliminado_motivo = 'Aeropuerto dado de baja'
+            WHERE aeropuerto_idaeropuerto = p_id_aeropuerto;
+
+            SET p_out_id_aeropuerto = p_id_aeropuerto;
+            SET p_out_id_terminal = NULL;
+            SET p_out_id_puerta = NULL;
+        END IF;
+    END IF;
+
+    /* ==========================================================
+       BLOQUE TERMINAL
+       ========================================================== */
+    IF p_tipo = 'TERMINAL' THEN
+        IF p_accion = 'A' THEN
+            -- Validar aeropuerto
+            SELECT COUNT(*) INTO v_tmp
+            FROM Aerolinea.aeropuerto
+            WHERE idaeropuerto = p_terminal_aeropuerto_id AND eliminado_en IS NULL;
+            IF v_tmp = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Aeropuerto no existe o eliminado';
+            END IF;
+
+            -- Validar unicidad
+            SELECT COUNT(*) INTO v_tmp
+            FROM Aerolinea.terminal
+            WHERE aeropuerto_idaeropuerto = p_terminal_aeropuerto_id
+              AND nombre = p_terminal_nombre
+              AND eliminado_en IS NULL;
+            IF v_tmp > 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Terminal duplicada para ese aeropuerto';
+            END IF;
+
+            INSERT INTO Aerolinea.terminal
+                (nombre, activo, creado_en, actualizado_en, eliminado_en,
+                 creado_por, actualizado_por, eliminado_por, eliminado_motivo, aeropuerto_idaeropuerto)
+            VALUES
+                (p_terminal_nombre, COALESCE(p_terminal_activo,1), v_now, v_now, NULL,
+                 p_usuario_app, p_usuario_app, NULL, NULL, p_terminal_aeropuerto_id);
+
+            SET p_out_id_terminal = LAST_INSERT_ID();
+            SET p_out_id_aeropuerto = p_terminal_aeropuerto_id;
+            SET p_out_id_puerta = NULL;
+
+        ELSEIF p_accion = 'M' THEN
+            UPDATE Aerolinea.terminal
+            SET nombre = COALESCE(p_terminal_nombre, nombre),
+                activo = COALESCE(p_terminal_activo, activo),
+                actualizado_en = v_now,
+                actualizado_por = p_usuario_app
+            WHERE idterminal = p_id_terminal;
+
+            IF ROW_COUNT() = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Terminal no encontrada o sin cambios';
+            END IF;
+
+            SET p_out_id_terminal = p_id_terminal;
+            SET p_out_id_aeropuerto = p_terminal_aeropuerto_id;
+            SET p_out_id_puerta = NULL;
+
+        ELSE
+            UPDATE Aerolinea.terminal
+            SET activo = 0,
+                eliminado_en = v_now,
+                eliminado_por = p_usuario_app,
+                eliminado_motivo = 'Baja lógica terminal'
+            WHERE idterminal = p_id_terminal;
+
+            IF ROW_COUNT() = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Terminal no encontrada';
+            END IF;
+
+            SET p_out_id_terminal = p_id_terminal;
+            SET p_out_id_aeropuerto = p_terminal_aeropuerto_id;
+            SET p_out_id_puerta = NULL;
+        END IF;
+    END IF;
+
+    /* ==========================================================
+       BLOQUE PUERTA
+       ========================================================== */
+    IF p_tipo = 'PUERTA' THEN
+        IF p_accion = 'A' THEN
+            -- Validar aeropuerto
+            SELECT COUNT(*) INTO v_tmp
+            FROM Aerolinea.aeropuerto
+            WHERE idaeropuerto = p_puerta_aeropuerto_id AND eliminado_en IS NULL;
+            IF v_tmp = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Aeropuerto inexistente o eliminado';
+            END IF;
+
+            -- Validar unicidad
+            SELECT COUNT(*) INTO v_tmp
+            FROM Aerolinea.puerta
+            WHERE aeropuerto_idaeropuerto = p_puerta_aeropuerto_id
+              AND codigo = p_puerta_codigo
+              AND eliminado_en IS NULL;
+            IF v_tmp > 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Código de puerta duplicado para ese aeropuerto';
+            END IF;
+
+            INSERT INTO Aerolinea.puerta
+                (codigo, activo, creado_en, actualizado_en, eliminado_en,
+                 creado_por, actualizado_por, eliminado_por, eliminado_motivo, aeropuerto_idaeropuerto)
+            VALUES
+                (p_puerta_codigo, COALESCE(p_puerta_activo,1), v_now, v_now, NULL,
+                 p_usuario_app, p_usuario_app, NULL, NULL, p_puerta_aeropuerto_id);
+
+            SET p_out_id_puerta = LAST_INSERT_ID();
+            SET p_out_id_aeropuerto = p_puerta_aeropuerto_id;
+            SET p_out_id_terminal = NULL;
+
+        ELSEIF p_accion = 'M' THEN
+            UPDATE Aerolinea.puerta
+            SET codigo = COALESCE(p_puerta_codigo, codigo),
+                activo = COALESCE(p_puerta_activo, activo),
+                actualizado_en = v_now,
+                actualizado_por = p_usuario_app
+            WHERE idpuerta = p_id_puerta;
+
+            IF ROW_COUNT() = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Puerta no encontrada o sin cambios';
+            END IF;
+
+            SET p_out_id_puerta = p_id_puerta;
+            SET p_out_id_aeropuerto = p_puerta_aeropuerto_id;
+            SET p_out_id_terminal = NULL;
+
+        ELSE
+            UPDATE Aerolinea.puerta
+            SET activo = 0,
+                eliminado_en = v_now,
+                eliminado_por = p_usuario_app,
+                eliminado_motivo = 'Baja lógica puerta'
+            WHERE idpuerta = p_id_puerta;
+
+            IF ROW_COUNT() = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Puerta no encontrada';
+            END IF;
+
+            SET p_out_id_puerta = p_id_puerta;
+            SET p_out_id_aeropuerto = p_puerta_aeropuerto_id;
+            SET p_out_id_terminal = NULL;
+        END IF;
+    END IF;
+
+    COMMIT;
+END$$
+
+DELIMITER ;
+CREATE DEFINER=`root`@`localhost` PROCEDURE `sp_abm_pasajero`(
+    IN  p_accion                CHAR(1),      -- 'A' (alta) | 'M' (modificar) | 'B' (baja lógica)
+
+    -- Claves para ubicar al pasajero (en M/B alcanza con uno u otro)
+    IN  p_idusuario             INT,
+    IN  p_idpersona             INT,
+
+    /* ===================== persona ===================== */
+    IN  p_nombre                VARCHAR(80),
+    IN  p_apellido              VARCHAR(80),
+    IN  p_fecha_nacimiento      DATE,
+
+    /* ===================== usuario ===================== */
+    IN  p_email                 VARCHAR(254),
+    IN  p_email_norm            VARCHAR(254),
+    IN  p_password_hash         VARBINARY(255),
+    IN  p_password_algoritmo    ENUM('argon2id','bcrypt'),
+    IN  p_password_actualizado  DATETIME,
+    IN  p_verificacion_email    TINYINT,
+    IN  p_verificacion_token    VARBINARY(32),
+    IN  p_verificacion_expira   DATETIME,
+    IN  p_reset_token_hash      VARBINARY(32),
+    IN  p_reset_expira          DATETIME,
+    IN  p_intentos_fallidos     SMALLINT,
+    IN  p_bloqueado_hasta       DATETIME,
+    IN  p_ultimo_acceso_en      DATETIME,
+    IN  p_usuariocol            VARCHAR(45),
+
+    /* ===================== direccion ===================== */
+    IN  p_iddireccion           INT,                  -- para M: qué dirección tocar; si NULL usa principal
+    IN  p_dir_tipo              ENUM('Domicilio','Laboral','Comercial','Otro'),
+    IN  p_dir_pais              CHAR(2),
+    IN  p_dir_provincia         VARCHAR(120),
+    IN  p_dir_ciudad            VARCHAR(120),
+    IN  p_dir_cp                VARCHAR(15),
+    IN  p_dir_calle             VARCHAR(120),
+    IN  p_dir_numero            VARCHAR(15),
+    IN  p_dir_piso              VARCHAR(10),
+    IN  p_dir_depto             VARCHAR(10),
+    IN  p_dir_comentario        TEXT,
+    IN  p_dir_es_principal      TINYINT,
+
+    /* ===================== telefono ===================== */
+    IN  p_idtelefono            INT,                  -- para M: qué teléfono tocar; si NULL usa principal
+    IN  p_tel_tipo              ENUM('movil','fijo','trabajo','otro'),
+    IN  p_tel_numero            VARCHAR(35),
+    IN  p_tel_es_whatsapp       TINYINT,
+    IN  p_tel_extension         VARCHAR(6),
+    IN  p_tel_es_principal      TINYINT,
+
+    /* ===================== documentacion ===================== */
+    IN  p_iddocumentacion       INT,                  -- para M: qué doc tocar; si NULL inserta nueva
+    IN  p_doc_tipo              ENUM('DNI','PASAPORTE','OTRO'),
+    IN  p_doc_numero            VARCHAR(32),
+    IN  p_doc_pais_emisor       CHAR(2),
+    IN  p_doc_estado            ENUM('VALIDO','VENCIDO','OBSERVADO','OTRO'),
+    IN  p_doc_autoridad         VARCHAR(130),
+    IN  p_doc_fecha_emision     DATETIME,
+    IN  p_doc_fecha_venc        DATETIME,
+    IN  p_doc_observacion       TEXT,
+
+    /* ===================== auditoría ===================== */
+    IN  p_usuario_app           INT,                  -- idusuario (FK auditoría)
+
+    /* ===================== OUTs ===================== */
+    OUT p_out_idusuario         INT,
+    OUT p_out_idpersona         INT
+)
+BEGIN
+    DECLARE v_now DATETIME DEFAULT NOW();
+    DECLARE v_idrol_pasajero INT;
+    DECLARE v_idpersona INT;
+    DECLARE v_idusuario INT;
+    DECLARE v_tmp INT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_out_idusuario = NULL;
+        SET p_out_idpersona = NULL;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error en sp_abm_pasajero';
+    END;
+
+    START TRANSACTION;
+
+    /* ---------- rol pasajero ---------- */
+    SELECT idrol INTO v_idrol_pasajero
+    FROM Aerolinea.rol
+    WHERE nombre = 'pasajero'
+    LIMIT 1;
+
+    IF v_idrol_pasajero IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'No existe rol pasajero';
+    END IF;
+
+    /* ---------- resolver identidades ---------- */
+    IF p_idusuario IS NOT NULL AND (p_idpersona IS NULL OR p_idpersona=0) THEN
+        SELECT persona_idpersona INTO v_idpersona
+        FROM Aerolinea.usuario
+        WHERE idusuario = p_idusuario;
+        SET v_idusuario = p_idusuario;
+    ELSEIF p_idpersona IS NOT NULL AND (p_idusuario IS NULL OR p_idusuario=0) THEN
+        SELECT idusuario INTO v_idusuario
+        FROM Aerolinea.usuario
+        WHERE persona_idpersona = p_idpersona
+          AND rol_idrol = v_idrol_pasajero
+        ORDER BY idusuario DESC LIMIT 1;
+        SET v_idpersona = p_idpersona;
+    ELSE
+        SET v_idusuario = p_idusuario;
+        SET v_idpersona = p_idpersona;
+    END IF;
+
+    /* ============================================================
+       ACCION: ALTA
+       ============================================================ */
+    IF p_accion = 'A' THEN
+        /* Validaciones mínimas */
+        IF p_email_norm IS NOT NULL THEN
+            SELECT COUNT(*) INTO v_tmp
+            FROM Aerolinea.usuario
+            WHERE email_norm = p_email_norm
+              AND eliminado_en IS NULL;
+            IF v_tmp > 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'email_norm ya existe';
+            END IF;
+        END IF;
+
+        /* persona */
+        INSERT INTO Aerolinea.persona
+            (nombre, apellido, fecha_de_nacimiento,
+             creado_en, actualizado_en, eliminado_en,
+             creado_por, actualizado_por, eliminado_por)
+        VALUES
+            (p_nombre, p_apellido, p_fecha_nacimiento,
+             v_now, NULL, NULL,
+             p_usuario_app, NULL, NULL);
+        SET v_idpersona = LAST_INSERT_ID();
+
+        /* direccion (opcional) */
+        IF p_dir_tipo IS NOT NULL THEN
+            -- validar país
+            IF p_dir_pais IS NOT NULL THEN
+                SELECT COUNT(*) INTO v_tmp FROM Aerolinea.pais WHERE tag = p_dir_pais AND eliminado_en IS NULL AND activo=1;
+                IF v_tmp = 0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Pais (direccion.pais) inexistente o inactivo'; END IF;
+            END IF;
+
+            INSERT INTO Aerolinea.direccion
+                (tipo,pais,provincia,ciudad,cp,calle,numero,piso,depto,comentario,es_principal,
+                 creado_en,actualizado_en,eliminado_en,creado_por,actualizado_por,eliminado_por,eliminado_motivo,persona_idpersona)
+            VALUES
+                (p_dir_tipo,p_dir_pais,p_dir_provincia,p_dir_ciudad,p_dir_cp,p_dir_calle,p_dir_numero,p_dir_piso,p_dir_depto,p_dir_comentario,COALESCE(p_dir_es_principal,1),
+                 v_now,v_now,NULL,p_usuario_app,p_usuario_app,NULL,NULL,v_idpersona);
+        END IF;
+
+        /* telefono (opcional) */
+        IF p_tel_tipo IS NOT NULL AND p_tel_numero IS NOT NULL THEN
+            INSERT INTO Aerolinea.telefono
+                (tipo,numero,es_whatssap,extension,es_principal,
+                 creado_en,actualizado_en,eliminado_en,creado_por,actualizado_por,eliminado_por,eliminado_motivo,persona_idpersona)
+            VALUES
+                (p_tel_tipo,p_tel_numero,COALESCE(p_tel_es_whatsapp,0),p_tel_extension,COALESCE(p_tel_es_principal,1),
+                 v_now,v_now,NULL,p_usuario_app,p_usuario_app,NULL,NULL,v_idpersona);
+        END IF;
+
+        /* documentacion (opcional) */
+        IF p_doc_tipo IS NOT NULL AND p_doc_numero IS NOT NULL THEN
+            IF p_doc_pais_emisor IS NOT NULL THEN
+                SELECT COUNT(*) INTO v_tmp FROM Aerolinea.pais WHERE tag = p_doc_pais_emisor AND eliminado_en IS NULL AND activo=1;
+                IF v_tmp = 0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Pais (documentacion.pais_emisor) inexistente o inactivo'; END IF;
+            END IF;
+
+            INSERT INTO Aerolinea.documentacion
+                (tipo,numero,pais_emisor,estado,autoridad,fecha_emision,fecha_vencimiento,observacion,
+                 creado_en,actualizado_en,creado_por,actualizado_por,eliminado_en,eliminado_por,eliminado_motivo,persona_idpersona)
+            VALUES
+                (p_doc_tipo,p_doc_numero,p_doc_pais_emisor,COALESCE(p_doc_estado,'VALIDO'),p_doc_autoridad,p_doc_fecha_emision,p_doc_fecha_venc,p_doc_observacion,
+                 v_now,v_now,p_usuario_app,p_usuario_app,NULL,NULL,NULL,v_idpersona);
+        END IF;
+
+        /* usuario (rol pasajero) */
+        INSERT INTO Aerolinea.usuario
+            (email,email_norm,password_hash,password_algoritmo,password_actualizado_en,
+             verificacion_email,verificacion_token_hash,verificacion_expira,
+             reset_token_hash,reset_expira,intentos_fallidos,bloqueado_hasta,ultimo_acceso_en,
+             creado_en,actualizado_en,eliminado_en,creado_por,actualizado_por,eliminado_por,eliminado_motivo,
+             usuariocol,rol_idrol,persona_idpersona)
+        VALUES
+            (p_email,p_email_norm,p_password_hash,p_password_algoritmo,COALESCE(p_password_actualizado,v_now),
+             COALESCE(p_verificacion_email,0),p_verificacion_token,p_verificacion_expira,
+             p_reset_token_hash,p_reset_expira,p_intentos_fallidos,p_bloqueado_hasta,p_ultimo_acceso_en,
+             v_now,v_now,NULL,p_usuario_app,p_usuario_app,NULL,NULL,
+             p_usuariocol,v_idrol_pasajero,v_idpersona);
+        SET v_idusuario = LAST_INSERT_ID();
+
+        SET p_out_idusuario = v_idusuario;
+        SET p_out_idpersona = v_idpersona;
+
+    /* ============================================================
+       ACCION: MODIFICAR
+       ============================================================ */
+    ELSEIF p_accion = 'M' THEN
+        IF v_idpersona IS NULL OR v_idusuario IS NULL THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Debe indicar p_idusuario o p_idpersona válidos';
+        END IF;
+
+        /* persona */
+        UPDATE Aerolinea.persona
+        SET nombre = COALESCE(p_nombre,nombre),
+            apellido = COALESCE(p_apellido,apellido),
+            fecha_de_nacimiento = COALESCE(p_fecha_nacimiento,fecha_de_nacimiento),
+            actualizado_en = v_now,
+            actualizado_por = p_usuario_app
+        WHERE idpersona = v_idpersona;
+
+        /* usuario  */
+        IF p_email_norm IS NOT NULL THEN
+            SELECT COUNT(*) INTO v_tmp
+            FROM Aerolinea.usuario
+            WHERE email_norm = p_email_norm
+              AND idusuario <> v_idusuario
+              AND eliminado_en IS NULL;
+            IF v_tmp > 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'email_norm ya existe en otro usuario';
+            END IF;
+        END IF;
+
+        UPDATE Aerolinea.usuario
+        SET email = COALESCE(p_email,email),
+            email_norm = COALESCE(p_email_norm,email_norm),
+            password_hash = COALESCE(p_password_hash,password_hash),
+            password_algoritmo = COALESCE(p_password_algoritmo,password_algoritmo),
+            password_actualizado_en = COALESCE(p_password_actualizado,password_actualizado_en),
+            verificacion_email = COALESCE(p_verificacion_email,verificacion_email),
+            verificacion_token_hash = COALESCE(p_verificacion_token,verificacion_token_hash),
+            verificacion_expira = COALESCE(p_verificacion_expira,verificacion_expira),
+            reset_token_hash = COALESCE(p_reset_token_hash,reset_token_hash),
+            reset_expira = COALESCE(p_reset_expira,reset_expira),
+            intentos_fallidos = COALESCE(p_intentos_fallidos,intentos_fallidos),
+            bloqueado_hasta = COALESCE(p_bloqueado_hasta,bloqueado_hasta),
+            ultimo_acceso_en = COALESCE(p_ultimo_acceso_en,ultimo_acceso_en),
+            actualizado_en = v_now,
+            actualizado_por = p_usuario_app,
+            usuariocol = COALESCE(p_usuariocol,usuariocol),
+            rol_idrol = v_idrol_pasajero  
+        WHERE idusuario = v_idusuario;
+
+        /* direccion: si se pasan campos, upsert sobre id indicado o principal */
+        IF p_dir_tipo IS NOT NULL OR p_dir_pais IS NOT NULL OR p_dir_ciudad IS NOT NULL
+           OR p_dir_calle IS NOT NULL OR p_dir_numero IS NOT NULL OR p_dir_es_principal IS NOT NULL
+           OR p_dir_provincia IS NOT NULL OR p_dir_cp IS NOT NULL OR p_dir_piso IS NOT NULL
+           OR p_dir_depto IS NOT NULL OR p_dir_comentario IS NOT NULL THEN
+
+            -- obtener iddireccion si no lo pasaron: tomar principal
+            IF (p_iddireccion IS NULL OR p_iddireccion=0) THEN
+                SELECT iddireccion INTO p_iddireccion
+                FROM Aerolinea.direccion
+                WHERE persona_idpersona = v_idpersona
+                ORDER BY es_principal DESC, iddireccion ASC
+                LIMIT 1;
+            END IF;
+
+            IF p_iddireccion IS NOT NULL THEN
+                UPDATE Aerolinea.direccion
+                SET tipo = COALESCE(p_dir_tipo,tipo),
+                    pais = COALESCE(p_dir_pais,pais),
+                    provincia = COALESCE(p_dir_provincia,provincia),
+                    ciudad = COALESCE(p_dir_ciudad,ciudad),
+                    cp = COALESCE(p_dir_cp,cp),
+                    calle = COALESCE(p_dir_calle,calle),
+                    numero = COALESCE(p_dir_numero,numero),
+                    piso = COALESCE(p_dir_piso,piso),
+                    depto = COALESCE(p_dir_depto,depto),
+                    comentario = COALESCE(p_dir_comentario,comentario),
+                    es_principal = COALESCE(p_dir_es_principal,es_principal),
+                    actualizado_en = v_now,
+                    actualizado_por = p_usuario_app
+                WHERE iddireccion = p_iddireccion
+                  AND persona_idpersona = v_idpersona;
+
+                IF ROW_COUNT() = 0 THEN
+                    INSERT INTO Aerolinea.direccion
+                        (tipo,pais,provincia,ciudad,cp,calle,numero,piso,depto,comentario,es_principal,
+                         creado_en,actualizado_en,eliminado_en,creado_por,actualizado_por,eliminado_por,eliminado_motivo,persona_idpersona)
+                    VALUES
+                        (COALESCE(p_dir_tipo,'Domicilio'),p_dir_pais,p_dir_provincia,p_dir_ciudad,p_dir_cp,p_dir_calle,p_dir_numero,p_dir_piso,p_dir_depto,p_dir_comentario,COALESCE(p_dir_es_principal,1),
+                         v_now,v_now,NULL,p_usuario_app,p_usuario_app,NULL,NULL,v_idpersona);
+                END IF;
+            ELSE
+                INSERT INTO Aerolinea.direccion
+                    (tipo,pais,provincia,ciudad,cp,calle,numero,piso,depto,comentario,es_principal,
+                     creado_en,actualizado_en,eliminado_en,creado_por,actualizado_por,eliminado_por,eliminado_motivo,persona_idpersona)
+                VALUES
+                    (COALESCE(p_dir_tipo,'Domicilio'),p_dir_pais,p_dir_provincia,p_dir_ciudad,p_dir_cp,p_dir_calle,p_dir_numero,p_dir_piso,p_dir_depto,p_dir_comentario,COALESCE(p_dir_es_principal,1),
+                     v_now,v_now,NULL,p_usuario_app,p_usuario_app,NULL,NULL,v_idpersona);
+            END IF;
+        END IF;
+
+        /* telefono: upsert similar */
+        IF p_tel_tipo IS NOT NULL OR p_tel_numero IS NOT NULL OR p_tel_es_whatsapp IS NOT NULL
+           OR p_tel_extension IS NOT NULL OR p_tel_es_principal IS NOT NULL THEN
+
+            IF (p_idtelefono IS NULL OR p_idtelefono=0) THEN
+                SELECT idtelefono INTO p_idtelefono
+                FROM Aerolinea.telefono
+                WHERE persona_idpersona = v_idpersona
+                ORDER BY es_principal DESC, idtelefono ASC
+                LIMIT 1;
+            END IF;
+
+            IF p_idtelefono IS NOT NULL THEN
+                UPDATE Aerolinea.telefono
+                SET tipo = COALESCE(p_tel_tipo,tipo),
+                    numero = COALESCE(p_tel_numero,numero),
+                    es_whatssap = COALESCE(p_tel_es_whatsapp,es_whatssap),
+                    extension = COALESCE(p_tel_extension,extension),
+                    es_principal = COALESCE(p_tel_es_principal,es_principal),
+                    actualizado_en = v_now,
+                    actualizado_por = p_usuario_app
+                WHERE idtelefono = p_idtelefono
+                  AND persona_idpersona = v_idpersona;
+
+                IF ROW_COUNT() = 0 THEN
+                    INSERT INTO Aerolinea.telefono
+                        (tipo,numero,es_whatssap,extension,es_principal,
+                         creado_en,actualizado_en,eliminado_en,creado_por,actualizado_por,eliminado_por,eliminado_motivo,persona_idpersona)
+                    VALUES
+                        (COALESCE(p_tel_tipo,'movil'),p_tel_numero,COALESCE(p_tel_es_whatsapp,0),p_tel_extension,COALESCE(p_tel_es_principal,1),
+                         v_now,v_now,NULL,p_usuario_app,p_usuario_app,NULL,NULL,v_idpersona);
+                END IF;
+            ELSE
+                INSERT INTO Aerolinea.telefono
+                    (tipo,numero,es_whatssap,extension,es_principal,
+                     creado_en,actualizado_en,eliminado_en,creado_por,actualizado_por,eliminado_por,eliminado_motivo,persona_idpersona)
+                VALUES
+                    (COALESCE(p_tel_tipo,'movil'),p_tel_numero,COALESCE(p_tel_es_whatsapp,0),p_tel_extension,COALESCE(p_tel_es_principal,1),
+                     v_now,v_now,NULL,p_usuario_app,p_usuario_app,NULL,NULL,v_idpersona);
+            END IF;
+        END IF;
+
+        /* documentacion: si se pasa id → update; si no → inserta nueva */
+        IF p_doc_tipo IS NOT NULL OR p_doc_numero IS NOT NULL OR p_doc_estado IS NOT NULL
+           OR p_doc_pais_emisor IS NOT NULL OR p_doc_autoridad IS NOT NULL
+           OR p_doc_fecha_emision IS NOT NULL OR p_doc_fecha_venc IS NOT NULL
+           OR p_doc_observacion IS NOT NULL THEN
+
+            IF p_iddocumentacion IS NOT NULL AND p_iddocumentacion>0 THEN
+                UPDATE Aerolinea.documentacion
+                SET tipo = COALESCE(p_doc_tipo,tipo),
+                    numero = COALESCE(p_doc_numero,numero),
+                    pais_emisor = COALESCE(p_doc_pais_emisor,pais_emisor),
+                    estado = COALESCE(p_doc_estado,estado),
+                    autoridad = COALESCE(p_doc_autoridad,autoridad),
+                    fecha_emision = COALESCE(p_doc_fecha_emision,fecha_emision),
+                    fecha_vencimiento = COALESCE(p_doc_fecha_venc,fecha_vencimiento),
+                    observacion = COALESCE(p_doc_observacion,observacion),
+                    actualizado_en = v_now,
+                    actualizado_por = p_usuario_app
+                WHERE iddocumentacion = p_iddocumentacion
+                  AND persona_idpersona = v_idpersona;
+            ELSE
+                INSERT INTO Aerolinea.documentacion
+                    (tipo,numero,pais_emisor,estado,autoridad,fecha_emision,fecha_vencimiento,observacion,
+                     creado_en,actualizado_en,creado_por,actualizado_por,eliminado_en,eliminado_por,eliminado_motivo,persona_idpersona)
+                VALUES
+                    (p_doc_tipo,p_doc_numero,p_doc_pais_emisor,COALESCE(p_doc_estado,'VALIDO'),p_doc_autoridad,p_doc_fecha_emision,p_doc_fecha_venc,p_doc_observacion,
+                     v_now,v_now,p_usuario_app,p_usuario_app,NULL,NULL,NULL,v_idpersona);
+            END IF;
+        END IF;
+
+        SET p_out_idusuario = v_idusuario;
+        SET p_out_idpersona = v_idpersona;
+
+    /* ============================================================
+       ACCION: BAJA LÓGICA
+       ============================================================ */
+    ELSEIF p_accion = 'B' THEN
+        IF v_idpersona IS NULL OR v_idusuario IS NULL THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Debe indicar p_idusuario o p_idpersona válidos';
+        END IF;
+
+        UPDATE Aerolinea.usuario
+        SET eliminado_en = v_now, eliminado_por = p_usuario_app, eliminado_motivo = 'Baja pasajero (ABM)',
+            actualizado_en = v_now, actualizado_por = p_usuario_app
+        WHERE idusuario = v_idusuario;
+
+        UPDATE Aerolinea.persona
+        SET eliminado_en = v_now, eliminado_por = p_usuario_app,
+            actualizado_en = v_now, actualizado_por = p_usuario_app
+        WHERE idpersona = v_idpersona;
+
+        UPDATE Aerolinea.direccion
+        SET eliminado_en = v_now, eliminado_por = p_usuario_app, eliminado_motivo = 'Baja pasajero (ABM)',
+            actualizado_en = v_now, actualizado_por = p_usuario_app
+        WHERE persona_idpersona = v_idpersona;
+
+        UPDATE Aerolinea.telefono
+        SET eliminado_en = v_now, eliminado_por = p_usuario_app, eliminado_motivo = 'Baja pasajero (ABM)',
+            actualizado_en = v_now, actualizado_por = p_usuario_app
+        WHERE persona_idpersona = v_idpersona;
+
+        UPDATE Aerolinea.documentacion
+        SET eliminado_en = v_now, eliminado_por = p_usuario_app, eliminado_motivo = 'Baja pasajero (ABM)',
+            actualizado_en = v_now, actualizado_por = p_usuario_app
+        WHERE persona_idpersona = v_idpersona;
+
+        SET p_out_idusuario = v_idusuario;
+        SET p_out_idpersona = v_idpersona;
+
+    ELSE
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'p_accion debe ser A, M o B';
+    END IF;
+
+    COMMIT;
+ENDDELIMITER $$
+
+CREATE PROCEDURE Aerolinea.sp_abm_tarifa_promocion(
+    IN  p_tipo                ENUM('TARIFA','PROMO'),
+    IN  p_accion              CHAR(1),          -- 'A'/'M'/'B'
+
+    /* ===== TARIFA ===== */
+    IN  p_idtarifa            INT,
+    IN  p_tarifa_nombre       ENUM('Primera clase','Ejecutivo','Economica','Economica plus'),
+    IN  p_precio              DECIMAL(12,2),
+    IN  p_impuesto            DECIMAL(5,2),
+    IN  p_tasa_fija           DECIMAL(12,2),
+    IN  p_tarifacol           DECIMAL(12,2),
+    IN  p_vigencia_desde      DATE,
+    IN  p_vigencia_hasta      DATE,
+    IN  p_activo              TINYINT,
+    IN  p_condiciones         TEXT,
+
+    /* ===== PROMOCION ===== */
+    IN  p_idpromocion         INT,
+    IN  p_promo_nombre        VARCHAR(120),
+    IN  p_promo_descripcion   VARCHAR(200),
+    IN  p_promo_valor         SMALLINT,
+    IN  p_promo_activo        TINYINT,
+    IN  p_promo_tarifa_id     INT,
+
+    /* ===== Auditoría ===== */
+    IN  p_usuario_app         INT,
+
+    /* ===== OUTs ===== */
+    OUT p_out_idtarifa        INT,
+    OUT p_out_idpromocion     INT
+)
+BEGIN
+    DECLARE v_now DATETIME DEFAULT NOW();
+    DECLARE v_tmp INT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        SET p_out_idtarifa = NULL;
+        SET p_out_idpromocion = NULL;
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Error en sp_abm_tarifa_promocion';
+    END;
+
+    START TRANSACTION;
+
+    /* ===========================
+       VALIDACIONES GENERALES
+       =========================== */
+    IF p_tipo NOT IN ('TARIFA','PROMO') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'p_tipo debe ser TARIFA o PROMO';
+    END IF;
+
+    IF p_accion NOT IN ('A','M','B') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'p_accion debe ser A, M o B';
+    END IF;
+
+    /* ============================================================
+       TARIFA
+       ============================================================ */
+    IF p_tipo = 'TARIFA' THEN
+
+        /* ---------- ALTA ---------- */
+        IF p_accion = 'A' THEN
+            -- vigencias coherentes
+            IF p_vigencia_desde IS NULL OR p_vigencia_hasta IS NULL OR p_vigencia_hasta < p_vigencia_desde THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Vigencias inválidas en tarifa';
+            END IF;
+
+            -- unicidad por nombre (índice UNIQUE existente)
+            -- Nota: el UNIQUE no permite “repetir” nombre aunque esté soft-deleted.
+            INSERT INTO Aerolinea.tarifa
+                (nombre, precio, impuesto, tasa_fija, tarifacol,
+                 vigencia_desde, vigencia_hasta, activo,
+                 creado_en, actualizado_en, eliminado_en,
+                 creado_por, actualizado_por, eliminado_por, eliminado_motivio,
+                 condiciones)
+            VALUES
+                (p_tarifa_nombre, p_precio, p_impuesto, p_tasa_fija, p_tarifacol,
+                 p_vigencia_desde, p_vigencia_hasta, COALESCE(p_activo,1),
+                 v_now, v_now, NULL,
+                 p_usuario_app, p_usuario_app, NULL, NULL,
+                 p_condiciones);
+
+            SET p_out_idtarifa = LAST_INSERT_ID();
+            SET p_out_idpromocion = NULL;
+
+        /* ---------- MODIFICAR ---------- */
+        ELSEIF p_accion = 'M' THEN
+            IF p_idtarifa IS NULL THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'p_idtarifa requerido para modificar';
+            END IF;
+
+            -- si me dan ambas fechas, verifico coherencia
+            IF p_vigencia_desde IS NOT NULL AND p_vigencia_hasta IS NOT NULL AND p_vigencia_hasta < p_vigencia_desde THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Vigencias inválidas en tarifa';
+            END IF;
+
+            -- si cambia nombre, confiar en UNIQUE (captura excepción arriba)
+            UPDATE Aerolinea.tarifa
+            SET
+                nombre          = COALESCE(p_tarifa_nombre, nombre),
+                precio          = COALESCE(p_precio, precio),
+                impuesto        = COALESCE(p_impuesto, impuesto),
+                tasa_fija       = COALESCE(p_tasa_fija, tasa_fija),
+                tarifacol       = COALESCE(p_tarifacol, tarifacol),
+                vigencia_desde  = COALESCE(p_vigencia_desde, vigencia_desde),
+                vigencia_hasta  = COALESCE(p_vigencia_hasta, vigencia_hasta),
+                activo          = COALESCE(p_activo, activo),
+                condiciones     = COALESCE(p_condiciones, condiciones),
+                actualizado_en  = v_now,
+                actualizado_por = p_usuario_app
+            WHERE idtarifa = p_idtarifa;
+
+            IF ROW_COUNT() = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Tarifa no encontrada o sin cambios';
+            END IF;
+
+            SET p_out_idtarifa = p_idtarifa;
+            SET p_out_idpromocion = NULL;
+
+        /* ---------- BAJA (soft delete) ---------- */
+        ELSE
+            IF p_idtarifa IS NULL THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'p_idtarifa requerido para baja';
+            END IF;
+
+            UPDATE Aerolinea.tarifa
+            SET
+                eliminado_en     = v_now,
+                eliminado_por    = p_usuario_app,
+                eliminado_motivio= 'Baja tarifa (ABM)',
+                activo           = 0,
+                actualizado_en   = v_now,
+                actualizado_por  = p_usuario_app
+            WHERE idtarifa = p_idtarifa;
+
+            IF ROW_COUNT() = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Tarifa no encontrada';
+            END IF;
+
+            -- (opcional) inactivar promos de esa tarifa, sin eliminarlas
+            UPDATE Aerolinea.promocion
+            SET activo = 0, actualizado_en = v_now, actualizado_por = p_usuario_app
+            WHERE tarifa_idtarifa = p_idtarifa AND eliminado_en IS NULL;
+
+            SET p_out_idtarifa = p_idtarifa;
+            SET p_out_idpromocion = NULL;
+        END IF;
+
+    /* ============================================================
+       PROMOCION
+       ============================================================ */
+    ELSE
+        /* ---------- Validaciones comunes a promo ---------- */
+        IF p_accion IN ('A','M') THEN
+            -- valor porcentaje razonable (0..100)
+            IF p_promo_valor IS NOT NULL AND (p_promo_valor < 0 OR p_promo_valor > 100) THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'p_promo_valor fuera de rango (0..100)';
+            END IF;
+        END IF;
+
+        /* ---------- ALTA ---------- */
+        IF p_accion = 'A' THEN
+            -- tarifa destino obligatoria y existente (no eliminada)
+            IF p_promo_tarifa_id IS NULL THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'p_promo_tarifa_id requerido';
+            END IF;
+
+            SELECT COUNT(*) INTO v_tmp
+            FROM Aerolinea.tarifa
+            WHERE idtarifa = p_promo_tarifa_id
+              AND eliminado_en IS NULL;
+            IF v_tmp = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Tarifa destino inexistente o eliminada';
+            END IF;
+
+            -- (opcional) evitar duplicados de nombre por tarifa “activa”
+            SELECT COUNT(*) INTO v_tmp
+            FROM Aerolinea.promocion
+            WHERE nombre = p_promo_nombre
+              AND tarifa_idtarifa = p_promo_tarifa_id
+              AND eliminado_en IS NULL;
+            IF v_tmp > 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Ya existe una promoción con ese nombre para la tarifa';
+            END IF;
+
+            INSERT INTO Aerolinea.promocion
+                (nombre, descripcion, valor, activo, tarifa_idtarifa,
+                 creado_en, actualizado_en, eliminado_en,
+                 creado_por, actualizado_por, eliminado_por, eliminado_motivo)
+            VALUES
+                (p_promo_nombre, p_promo_descripcion, p_promo_valor, COALESCE(p_promo_activo,1), p_promo_tarifa_id,
+                 v_now, v_now, NULL,
+                 p_usuario_app, p_usuario_app, NULL, NULL);
+
+            SET p_out_idpromocion = LAST_INSERT_ID();
+            SET p_out_idtarifa = p_promo_tarifa_id;
+
+        /* ---------- MODIFICAR ---------- */
+        ELSEIF p_accion = 'M' THEN
+            IF p_idpromocion IS NULL THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'p_idpromocion requerido para modificar';
+            END IF;
+
+            -- Si me cambian la tarifa destino, validar
+            IF p_promo_tarifa_id IS NOT NULL THEN
+                SELECT COUNT(*) INTO v_tmp
+                FROM Aerolinea.tarifa
+                WHERE idtarifa = p_promo_tarifa_id
+                  AND eliminado_en IS NULL;
+                IF v_tmp = 0 THEN
+                    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Tarifa destino inexistente o eliminada';
+                END IF;
+            END IF;
+
+            -- Evitar duplicado de nombre dentro de la misma tarifa (si cambian nombre/tarifa)
+            IF p_promo_nombre IS NOT NULL OR p_promo_tarifa_id IS NOT NULL THEN
+                SELECT COUNT(*) INTO v_tmp
+                FROM Aerolinea.promocion
+                WHERE nombre = COALESCE(p_promo_nombre, nombre)
+                  AND tarifa_idtarifa = COALESCE(p_promo_tarifa_id, tarifa_idtarifa)
+                  AND idpromocion <> p_idpromocion
+                  AND eliminado_en IS NULL;
+                IF v_tmp > 0 THEN
+                    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Conflicto de nombre de promoción para la tarifa';
+                END IF;
+            END IF;
+
+            UPDATE Aerolinea.promocion
+            SET
+                nombre          = COALESCE(p_promo_nombre, nombre),
+                descripcion     = COALESCE(p_promo_descripcion, descripcion),
+                valor           = COALESCE(p_promo_valor, valor),
+                activo          = COALESCE(p_promo_activo, activo),
+                tarifa_idtarifa = COALESCE(p_promo_tarifa_id, tarifa_idtarifa),
+                actualizado_en  = v_now,
+                actualizado_por = p_usuario_app
+            WHERE idpromocion = p_idpromocion;
+
+            IF ROW_COUNT() = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Promoción no encontrada o sin cambios';
+            END IF;
+
+            -- devolver ids
+            SELECT tarifa_idtarifa INTO p_out_idtarifa
+            FROM Aerolinea.promocion
+            WHERE idpromocion = p_idpromocion;
+
+            SET p_out_idpromocion = p_idpromocion;
+
+        /* ---------- BAJA (soft delete) ---------- */
+        ELSE
+            IF p_idpromocion IS NULL THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'p_idpromocion requerido para baja';
+            END IF;
+
+            UPDATE Aerolinea.promocion
+            SET
+                eliminado_en   = v_now,
+                eliminado_por  = p_usuario_app,
+                eliminado_motivo = 'Baja promoción (ABM)',
+                actualizado_en = v_now,
+                actualizado_por= p_usuario_app,
+                activo = 0
+            WHERE idpromocion = p_idpromocion;
+
+            IF ROW_COUNT() = 0 THEN
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Promoción no encontrada';
+            END IF;
+
+            SELECT tarifa_idtarifa INTO p_out_idtarifa
+            FROM Aerolinea.promocion
+            WHERE idpromocion = p_idpromocion;
+
+            SET p_out_idpromocion = p_idpromocion;
+        END IF;
+    END IF;
+
+    COMMIT;
+END$$
+
+DELIMITER ;
+-- =========================================================
+-- TEST ABM: aeropuerto + terminal + puerta
+-- Procedimiento: Aerolinea.sp_abm_aeropuerto_terminal_puerta
+-- =========================================================
+
+/* Auditor (idusuario válido en tu base) */
+SET @auditor := 1;
+
+/* Detectar IDs de dos aeropuertos reales (de tus inserts) para pruebas puntuales */
+SELECT idaeropuerto INTO @id_eze FROM Aerolinea.aeropuerto WHERE tag='EZE' AND eliminado_en IS NULL LIMIT 1;
+SELECT idaeropuerto INTO @id_aep FROM Aerolinea.aeropuerto WHERE tag='AEP' AND eliminado_en IS NULL LIMIT 1;
+
+SELECT 'AEROPUERTOS DETECTADOS' AS info, @id_eze AS id_EZE, @id_aep AS id_AEP;
+
+/* =========================================================
+   1) ALTA de AEROPUERTO (nuevo: FTE - El Calafate)
+   ========================================================= */
+SET @out_aero := NULL; SET @out_term := NULL; SET @out_gate := NULL;
+
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  /* tipo/accion */ 'AEROPUERTO','A',
+  /* aeropuerto */  NULL, 'FTE', 'Aeropuerto Internacional Comandante A. Tola', 'El Calafate', -50.280300, -72.053100, 'America/Argentina/Buenos_Aires', 1,
+  /* terminal */    NULL, NULL, NULL, NULL,
+  /* puerta */      NULL, NULL, NULL, NULL,
+  /* auditor */     @auditor,
+  /* outs */        @out_aero, @out_term, @out_gate
+);
+SELECT 'ALTA AEROPUERTO FTE' AS paso, @out_aero AS idaeropuerto;
+
+/* Verificación aeropuerto creado */
+SELECT * FROM Aerolinea.aeropuerto WHERE idaeropuerto=@out_aero;
+
+/* =========================================================
+   2) ALTA de TERMINAL en FTE
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','A',
+  /* aeropuerto */  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  /* terminal */    NULL, 'Terminal Única', 1, @out_aero,
+  /* puerta */      NULL, NULL, NULL, NULL,
+  @auditor,
+  @aero_out2, @out_term, @gate_out2
+);
+SELECT 'ALTA TERMINAL FTE' AS paso, @out_term AS idterminal;
+
+SELECT * FROM Aerolinea.terminal WHERE idterminal=@out_term;
+
+/* =========================================================
+   3) ALTA de PUERTA en FTE
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','A',
+  /* aeropuerto */  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  /* terminal */    NULL, NULL, NULL, NULL,
+  /* puerta */      NULL, 'FTE-G01', 1, @out_aero,
+  @auditor,
+  @aero_out3, @term_out3, @out_gate
+);
+SELECT 'ALTA PUERTA FTE' AS paso, @out_gate AS idpuerta;
+
+SELECT * FROM Aerolinea.puerta WHERE idpuerta=@out_gate;
+
+/* =========================================================
+   4) MODIFICAR AEROPUERTO FTE (cambiar nombre/ciudad)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'AEROPUERTO','M',
+  @out_aero, NULL, 'Aeropuerto Intl. El Calafate', 'El Calafate (Santa Cruz)', NULL, NULL, NULL, 1,
+  NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_outM, @term_outM, @gate_outM
+);
+SELECT 'MODIFICAR AEROPUERTO FTE' AS paso, @aero_outM AS idaeropuerto;
+SELECT * FROM Aerolinea.aeropuerto WHERE idaeropuerto=@aero_outM;
+
+/* =========================================================
+   5) MODIFICAR TERMINAL FTE (renombrar)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','M',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  @out_term, 'Terminal Principal', 1, @out_aero,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_outTM, @term_outM2, @gate_outTM
+);
+SELECT 'MODIFICAR TERMINAL FTE' AS paso, @term_outM2 AS idterminal;
+SELECT * FROM Aerolinea.terminal WHERE idterminal=@term_outM2;
+
+/* =========================================================
+   6) MODIFICAR PUERTA FTE (cambiar código)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','M',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @out_gate, 'FTE-G02', 1, @out_aero,
+  @auditor,
+  @aero_outPM, @term_outPM, @gate_outM
+);
+SELECT 'MODIFICAR PUERTA FTE' AS paso, @gate_outM AS idpuerta;
+SELECT * FROM Aerolinea.puerta WHERE idpuerta=@gate_outM;
+
+/* =========================================================
+   7) BAJA LÓGICA de PUERTA (FTE-G02)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','B',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @gate_outM, NULL, NULL, @out_aero,
+  @auditor,
+  @aero_outPB, @term_outPB, @gate_outB
+);
+SELECT 'BAJA PUERTA FTE' AS paso, @gate_outB AS idpuerta;
+SELECT idpuerta, codigo, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.puerta
+WHERE idpuerta=@gate_outB;
+
+/* =========================================================
+   8) BAJA LÓGICA de TERMINAL (FTE)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','B',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  @out_term, NULL, NULL, @out_aero,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_outTB, @term_outB, @gate_outTB
+);
+SELECT 'BAJA TERMINAL FTE' AS paso, @term_outB AS idterminal;
+SELECT idterminal, nombre, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.terminal
+WHERE idterminal=@term_outB;
+
+/* =========================================================
+   9) BAJA LÓGICA de AEROPUERTO (FTE)
+      (el SP además inactiva terminales/puertas del aeropuerto)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'AEROPUERTO','B',
+  @out_aero, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_outB, @term_outB2, @gate_outB2
+);
+SELECT 'BAJA AEROPUERTO FTE' AS paso, @aero_outB AS idaeropuerto;
+SELECT idaeropuerto, tag, nombre, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.aeropuerto
+WHERE idaeropuerto=@aero_outB;
+
+/* =========================================================
+   10) PRUEBAS en aeropuerto EXISTENTE (AEP)
+       - Alta terminal única de prueba
+       - Alta puerta única de prueba
+       - Modificación
+       - Baja
+   ========================================================= */
+
+-- 10.1 Alta Terminal en AEP con nombre único
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','A',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL, CONCAT('Terminal Prueba ', DATE_FORMAT(NOW(), '%H%i%s')), 1, @id_aep,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_aep_out, @term_aep, @gate_dummy
+);
+SELECT 'ALTA TERMINAL AEP' AS paso, @term_aep AS idterminal;
+SELECT * FROM Aerolinea.terminal WHERE idterminal=@term_aep;
+
+-- 10.2 Alta Puerta en AEP con código único
+SET @code_gate := CONCAT('AEP-G', DATE_FORMAT(NOW(), '%H%i'));
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','A',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  NULL, @code_gate, 1, @id_aep,
+  @auditor,
+  @aero_aep2, @term_aep2, @gate_aep
+);
+SELECT 'ALTA PUERTA AEP' AS paso, @gate_aep AS idpuerta, @code_gate AS codigo;
+SELECT * FROM Aerolinea.puerta WHERE idpuerta=@gate_aep;
+
+-- 10.3 Modificar Terminal AEP
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','M',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  @term_aep, CONCAT('Terminal Test ', DATE_FORMAT(NOW(), '%H%i%s')), 1, @id_aep,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_aep3, @term_aepM, @gate_aepM
+);
+SELECT 'MODIFICAR TERMINAL AEP' AS paso, @term_aepM AS idterminal;
+SELECT * FROM Aerolinea.terminal WHERE idterminal=@term_aepM;
+
+-- 10.4 Modificar Puerta AEP
+SET @code_gate2 := CONCAT(@code_gate, '-X');
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','M',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @gate_aep, @code_gate2, 1, @id_aep,
+  @auditor,
+  @aero_aep4, @term_aep4, @gate_aepM2
+);
+SELECT 'MODIFICAR PUERTA AEP' AS paso, @gate_aepM2 AS idpuerta, @code_gate2 AS codigo;
+SELECT * FROM Aerolinea.puerta WHERE idpuerta=@gate_aepM2;
+
+-- 10.5 Baja Terminal AEP (la creada en 10.1)
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','B',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  @term_aepM, NULL, NULL, @id_aep,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_aep5, @term_aepB, @gate_aepB
+);
+SELECT 'BAJA TERMINAL AEP' AS paso, @term_aepB AS idterminal;
+SELECT idterminal, nombre, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.terminal WHERE idterminal=@term_aepB;
+
+-- 10.6 Baja Puerta AEP (la creada en 10.2)
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','B',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @gate_aepM2, NULL, NULL, @id_aep,
+  @auditor,
+  @aero_aep6, @term_aep6, @gate_aepB2
+);
+SELECT 'BAJA PUERTA AEP' AS paso, @gate_aepB2 AS idpuerta;
+SELECT idpuerta, codigo, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.puerta WHERE idpuerta=@gate_aepB2;
+
+-- FIN DEL TEST
+-- =========================================================
+-- PRUEBAS ABM PASAJEROS (ALTA / MODIFICAR / BAJA)
+-- Requisitos:
+--  - Rol 'pasajero' (id 21)
+--  - País 'AR' existe
+--  - Usuario auditor válido (usamos 1)
+--  - Procedimiento: Aerolinea.sp_abm_pasajero (50 params)
+-- =========================================================
+
+/* ---------- Utilidades de sesión ---------- */
+SET @auditor := 1;
+
+-- ================================
+-- 1) ALTA (A) - pasajero de prueba
+-- ================================
+SET @out_user := NULL;
+SET @out_person := NULL;
+
+CALL Aerolinea.sp_abm_pasajero(
+  /*  1 */ 'A',
+  /*  2 */ NULL,                -- p_idusuario
+  /*  3 */ NULL,                -- p_idpersona
+
+  /* Persona */
+  /*  4 */ 'PruebaABM',
+  /*  5 */ 'Pasajero',
+  /*  6 */ '1990-02-20',
+
+  /* Usuario */
+  /*  7 */ 'prueba.abm+01@lamontana.com.ar',     -- email
+  /*  8 */ 'PRUEBA.ABM+01@LAMONTANA.COM.AR',     -- email_norm
+  /*  9 */ x'DEADBEEF',                          -- password_hash (dummy)
+  /* 10 */ 'bcrypt',                             -- password_algoritmo
+  /* 11 */ NOW(),                                -- password_actualizado_en
+  /* 12 */ 0,                                    -- verificacion_email
+  /* 13 */ NULL,                                 -- verificacion_token_hash
+  /* 14 */ NULL,                                 -- verificacion_expira
+  /* 15 */ NULL,                                 -- reset_token_hash
+  /* 16 */ NULL,                                 -- reset_expira
+  /* 17 */ NULL,                                 -- intentos_fallidos
+  /* 18 */ NULL,                                 -- bloqueado_hasta
+  /* 19 */ NULL,                                 -- ultimo_acceso_en
+  /* 20 */ NULL,                                 -- usuariocol
+
+  /* Dirección (crea principal) */
+  /* 21 */ NULL,                                 -- p_iddireccion
+  /* 22 */ 'Domicilio',
+  /* 23 */ 'AR',
+  /* 24 */ 'Buenos Aires',
+  /* 25 */ 'CABA',
+  /* 26 */ '1001',
+  /* 27 */ 'Av. Siempre Viva',
+  /* 28 */ '742',
+  /* 29 */ '1',
+  /* 30 */ 'A',
+  /* 31 */ 'Alta creada por script de prueba',
+  /* 32 */ 1,                                    -- es_principal
+
+  /* Teléfono (crea principal) */
+  /* 33 */ NULL,                                 -- p_idtelefono
+  /* 34 */ 'movil',
+  /* 35 */ '+5491100000001',
+  /* 36 */ 1,                                    -- es_whatssap
+  /* 37 */ NULL,                                 -- extension
+  /* 38 */ 1,                                    -- es_principal
+
+  /* Documentación (crea una) */
+  /* 39 */ NULL,                                 -- p_iddocumentacion
+  /* 40 */ 'DNI',
+  /* 41 */ '40000001',
+  /* 42 */ 'AR',
+  /* 43 */ 'VALIDO',
+  /* 44 */ 'RENAPER',
+  /* 45 */ '2018-01-01 00:00:00',
+  /* 46 */ '2030-01-01 00:00:00',
+  /* 47 */ 'Doc de prueba ABM',
+
+  /* Auditoría */
+  /* 48 */ @auditor,
+
+  /* OUTs */
+  /* 49 */ @out_user,
+  /* 50 */ @out_person
+);
+
+SELECT 'ALTA -> IDs creados' AS paso, @out_person AS persona_id, @out_user AS usuario_id;
+
+-- Verificaciones rápidas (ALTA)
+SELECT p.*   FROM Aerolinea.persona       p   WHERE p.idpersona=@out_person LIMIT 1;
+SELECT u.*   FROM Aerolinea.usuario       u   WHERE u.idusuario=@out_user   LIMIT 1;
+SELECT d.*   FROM Aerolinea.direccion     d   WHERE d.persona_idpersona=@out_person;
+SELECT t.*   FROM Aerolinea.telefono      t   WHERE t.persona_idpersona=@out_person;
+SELECT doc.* FROM Aerolinea.documentacion doc WHERE doc.persona_idpersona=@out_person;
+
+-- ===============================================
+-- 2) MODIFICAR (M) - pasajera real (id 2 / persona 2)
+--    (si querés otra persona, cambiá estos dos IDs)
+-- ===============================================
+SET @usr_real := 2;
+SET @per_real := 2;
+
+CALL Aerolinea.sp_abm_pasajero(
+  /*  1 */ 'M',
+  /*  2 */ @usr_real,          -- p_idusuario
+  /*  3 */ @per_real,          -- p_idpersona
+
+  /* Persona */
+  /*  4 */ 'Camila Renata',
+  /*  5 */ 'Fernandez',
+  /*  6 */ '1992-08-25',
+
+  /* Usuario */
+  /*  7 */ 'camila.fernandez@outlook.com',
+  /*  8 */ 'CAMILA.FERNANDEZ@OUTLOOK.COM',
+  /*  9 */ x'ABCD1234',
+  /* 10 */ 'bcrypt',
+  /* 11 */ NOW(),
+  /* 12 */ 1,
+  /* 13 */ NULL,
+  /* 14 */ NULL,
+  /* 15 */ NULL,
+  /* 16 */ NULL,
+  /* 17 */ NULL,
+  /* 18 */ NULL,
+  /* 19 */ NULL,
+  /* 20 */ NULL,
+
+  /* Dirección (actualiza principal o inserta si no hay) */
+  /* 21 */ NULL,               -- iddireccion (NULL => principal)
+  /* 22 */ 'Domicilio',
+  /* 23 */ 'AR',
+  /* 24 */ 'Buenos Aires',
+  /* 25 */ 'La Plata',
+  /* 26 */ '1900',
+  /* 27 */ 'Calle 50',
+  /* 28 */ '999',
+  /* 29 */ '7',
+  /* 30 */ 'B',
+  /* 31 */ 'Actualizada por prueba MODIFICAR',
+  /* 32 */ 1,
+
+  /* Teléfono (actualiza principal o inserta) */
+  /* 33 */ NULL,               -- idtelefono
+  /* 34 */ 'movil',
+  /* 35 */ '+5492215550000',
+  /* 36 */ 1,
+  /* 37 */ NULL,
+  /* 38 */ 1,
+
+  /* Documentación (inserta nueva) */
+  /* 39 */ NULL,               -- iddocumentacion
+  /* 40 */ 'DNI',
+  /* 41 */ '35123456',
+  /* 42 */ 'AR',
+  /* 43 */ 'VALIDO',
+  /* 44 */ 'RENAPER',
+  /* 45 */ '2019-02-02 00:00:00',
+  /* 46 */ '2031-02-02 00:00:00',
+  /* 47 */ 'Renovación por actualización de datos',
+
+  /* Auditoría */
+  /* 48 */ @auditor,
+
+  /* OUTs (opcionales) */
+  /* 49 */ @out_user2,
+  /* 50 */ @out_person2
+);
+
+-- Verificaciones (MODIFICAR)
+SELECT p.*   FROM Aerolinea.persona        p   WHERE p.idpersona=@per_real;
+SELECT u.*   FROM Aerolinea.usuario        u   WHERE u.idusuario=@usr_real;
+SELECT d.*   FROM Aerolinea.direccion      d   WHERE d.persona_idpersona=@per_real ORDER BY d.iddireccion DESC;
+SELECT t.*   FROM Aerolinea.telefono       t   WHERE t.persona_idpersona=@per_real ORDER BY t.idtelefono  DESC;
+SELECT doc.* FROM Aerolinea.documentacion  doc WHERE doc.persona_idpersona=@per_real ORDER BY doc.iddocumentacion DESC;
+
+-- ===========================================
+-- 3) BAJA (B) - del pasajero de prueba (ALTA)
+-- ===========================================
+CALL Aerolinea.sp_abm_pasajero(
+  /*  1 */ 'B',
+  /*  2 */ @out_user,          -- p_idusuario creado en ALTA
+  /*  3 */ @out_person,        -- p_idpersona creado en ALTA
+
+  /* Persona (ignorado) */
+  /*  4 */ NULL,
+  /*  5 */ NULL,
+  /*  6 */ NULL,
+
+  /* Usuario (ignorado) */
+  /*  7 */ NULL,
+  /*  8 */ NULL,
+  /*  9 */ NULL,
+  /* 10 */ NULL,
+  /* 11 */ NULL,
+  /* 12 */ NULL,
+  /* 13 */ NULL,
+  /* 14 */ NULL,
+  /* 15 */ NULL,
+  /* 16 */ NULL,
+  /* 17 */ NULL,
+  /* 18 */ NULL,
+  /* 19 */ NULL,
+  /* 20 */ NULL,
+
+  /* Dirección (ignorado) */
+  /* 21 */ NULL,
+  /* 22 */ NULL,
+  /* 23 */ NULL,
+  /* 24 */ NULL,
+  /* 25 */ NULL,
+  /* 26 */ NULL,
+  /* 27 */ NULL,
+  /* 28 */ NULL,
+  /* 29 */ NULL,
+  /* 30 */ NULL,
+  /* 31 */ NULL,
+  /* 32 */ NULL,
+
+  /* Teléfono (ignorado) */
+  /* 33 */ NULL,
+  /* 34 */ NULL,
+  /* 35 */ NULL,
+  /* 36 */ NULL,
+  /* 37 */ NULL,
+  /* 38 */ NULL,
+
+  /* Documentación (ignorado) */
+  /* 39 */ NULL,
+  /* 40 */ NULL,
+  /* 41 */ NULL,
+  /* 42 */ NULL,
+  /* 43 */ NULL,
+  /* 44 */ NULL,
+  /* 45 */ NULL,
+  /* 46 */ NULL,
+  /* 47 */ NULL,
+
+  /* Auditoría */
+  /* 48 */ @auditor,
+
+  /* OUTs */
+  /* 49 */ @out_user_baja,
+  /* 50 */ @out_person_baja
+);
+
+-- Verificaciones (BAJA)
+SELECT p.* FROM Aerolinea.persona p WHERE p.idpersona=@out_person;
+SELECT u.* FROM Aerolinea.usuario u WHERE u.idusuario=@out_user;
+-- =========================================================
+-- TEST ABM: TARIFA & PROMOCION
+-- Procedimiento: Aerolinea.sp_abm_tarifa_promocion
+-- =========================================================
+
+/* Auditor (idusuario válido en tu base) */
+SET @auditor := 1;
+
+/* Descubrir IDs reales de las 4 tarifas por nombre (ENUMs existentes) */
+SELECT idtarifa INTO @id_pc  FROM Aerolinea.tarifa WHERE nombre = 'Primera clase'   AND eliminado_en IS NULL LIMIT 1;
+SELECT idtarifa INTO @id_ej  FROM Aerolinea.tarifa WHERE nombre = 'Ejecutivo'       AND eliminado_en IS NULL LIMIT 1;
+SELECT idtarifa INTO @id_ep  FROM Aerolinea.tarifa WHERE nombre = 'Economica plus'  AND eliminado_en IS NULL LIMIT 1;
+SELECT idtarifa INTO @id_ec  FROM Aerolinea.tarifa WHERE nombre = 'Economica'       AND eliminado_en IS NULL LIMIT 1;
+
+SELECT 'TARIFAS DETECTADAS' AS info, @id_pc AS id_pc, @id_ej AS id_ej, @id_ep AS id_ep, @id_ec AS id_ec;
+
+/* =========================================================
+   1) PROMOCION - ALTA (para 'Economica plus')
+   Creamos un nombre único con timestamp para evitar conflictos
+   ========================================================= */
+SET @promo_name := CONCAT('EP-PRUEBA-', DATE_FORMAT(NOW(), '%Y%m%d%H%i%s'));
+SET @out_tarifa := NULL;
+SET @out_promo  := NULL;
+
+CALL Aerolinea.sp_abm_tarifa_promocion(
+  /* p_tipo, p_accion */              'PROMO','A',
+
+  /* ===== TARIFA params (no aplican) ===== */
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+
+  /* ===== PROMOCION params ===== */
+  NULL,                    -- p_idpromocion
+  @promo_name,             -- p_promo_nombre (único)
+  'Promo de prueba ABM',   -- p_promo_descripcion
+  9,                       -- p_promo_valor (0..100)
+  1,                       -- p_promo_activo
+  @id_ep,                  -- p_promo_tarifa_id (Economica plus)
+
+  /* Auditoría */
+  @auditor,
+
+  /* OUTs */
+  @out_tarifa, @out_promo
+);
+
+SELECT 'PROMO ALTA -> OUTs' AS paso, @out_tarifa AS tarifa_id, @out_promo AS promo_id;
+SELECT * FROM Aerolinea.promocion WHERE idpromocion = @out_promo;
+
+/* =========================================================
+   2) PROMOCION - MODIFICAR (misma promo recién creada)
+   ========================================================= */
+SET @out_tarifa := NULL;
+SET @out_promo_out := NULL;
+
+CALL Aerolinea.sp_abm_tarifa_promocion(
+  /* p_tipo, p_accion */              'PROMO','M',
+
+  /* ===== TARIFA params (no aplican) ===== */
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+
+  /* ===== PROMOCION params ===== */
+  @out_promo,             -- p_idpromocion
+  CONCAT(@promo_name,'-EDIT'),  -- nuevo nombre (sigue único)
+  'Promo editada por test ABM',
+  12,                      -- nuevo valor
+  1,                       -- activo
+  @id_ep,                  -- misma tarifa
+
+  /* Auditoría */
+  @auditor,
+
+  /* OUTs */
+  @out_tarifa, @out_promo_out
+);
+
+SELECT 'PROMO MODIFICAR -> OUTs' AS paso, @out_tarifa AS tarifa_id, @out_promo_out AS promo_id;
+SELECT * FROM Aerolinea.promocion WHERE idpromocion = @out_promo_out;
+
+/* =========================================================
+   3) PROMOCION - BAJA (soft delete) de la promo creada
+   ========================================================= */
+SET @out_tarifa := NULL;
+SET @out_promo_baja := NULL;
+
+CALL Aerolinea.sp_abm_tarifa_promocion(
+  /* p_tipo, p_accion */              'PROMO','B',
+
+  /* ===== TARIFA params (no aplican) ===== */
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+
+  /* ===== PROMOCION params ===== */
+  @out_promo_out,         -- p_idpromocion
+  NULL, NULL, NULL, NULL, NULL,
+
+  /* Auditoría */
+  @auditor,
+
+  /* OUTs */
+  @out_tarifa, @out_promo_baja
+);
+
+SELECT 'PROMO BAJA -> OUTs' AS paso, @out_tarifa AS tarifa_id, @out_promo_baja AS promo_id;
+SELECT idpromocion, nombre, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.promocion
+WHERE idpromocion = @out_promo_baja;
+
+/* =========================================================
+   4) TARIFA - MODIFICAR ('Economica plus')
+   Ajustamos precio, impuesto y condiciones
+   ========================================================= */
+SET @out_tarifa_mod := NULL;
+SET @dummy := NULL;
+
+CALL Aerolinea.sp_abm_tarifa_promocion(
+  /* p_tipo, p_accion */              'TARIFA','M',
+
+  /* ===== TARIFA params ===== */
+  @id_ep,                 -- p_idtarifa
+  NULL,                   -- p_tarifa_nombre (no lo cambiamos)
+  182500.00,              -- p_precio (nuevo)
+  19.50,                  -- p_impuesto (nuevo)
+  9400.00,                -- p_tasa_fija (nuevo)
+  NULL,                   -- p_tarifacol
+  '2025-01-01',           -- p_vigencia_desde (sin cambios efectivos)
+  '2025-12-31',           -- p_vigencia_hasta
+  1,                      -- p_activo
+  'Condiciones ajustadas por test ABM', -- p_condiciones
+
+  /* ===== PROMO params (no aplican) ===== */
+  NULL,NULL,NULL,NULL,NULL,NULL,
+
+  /* Auditoría */
+  @auditor,
+
+  /* OUTs */
+  @out_tarifa_mod, @dummy
+);
+
+SELECT 'TARIFA MODIFICAR -> OUT' AS paso, @out_tarifa_mod AS idtarifa;
+SELECT * FROM Aerolinea.tarifa WHERE idtarifa = @out_tarifa_mod;
+
+/* =========================================================
+   5) TARIFA - BAJA (soft delete) de 'Economica'
+   Elegimos 'Economica' porque tus reservas/promo que usaste
+   apuntan a otras clases; así evitamos impactos colaterales.
+   Además, el SP inactiva las promos de esa tarifa (si existieran).
+   ========================================================= */
+SET @out_tarifa_baja := NULL;
+SET @dummy := NULL;
+
+CALL Aerolinea.sp_abm_tarifa_promocion(
+  /* p_tipo, p_accion */              'TARIFA','B',
+
+  /* ===== TARIFA params ===== */
+  @id_ec,      -- p_idtarifa (Economica)
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+
+  /* ===== PROMO params (no aplican) ===== */
+  NULL,NULL,NULL,NULL,NULL,NULL,
+
+  /* Auditoría */
+  @auditor,
+
+  /* OUTs */
+  @out_tarifa_baja, @dummy
+);
+
+SELECT 'TARIFA BAJA -> OUT' AS paso, @out_tarifa_baja AS idtarifa;
+SELECT idtarifa, nombre, activo, eliminado_en, eliminado_motivio
+FROM Aerolinea.tarifa
+WHERE idtarifa = @out_tarifa_baja;
+
+/* Si existieran promos ligadas a 'Economica', quedarán inactivas */
+SELECT idpromocion, nombre, activo, eliminado_en
+FROM Aerolinea.promocion
+WHERE tarifa_idtarifa = @out_tarifa_baja
+ORDER BY idpromocion;

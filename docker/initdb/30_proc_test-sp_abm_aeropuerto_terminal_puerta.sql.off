@@ -1,0 +1,240 @@
+USE Aerolinea;
+
+-- =========================================================
+-- TEST ABM: aeropuerto + terminal + puerta
+-- Procedimiento: Aerolinea.sp_abm_aeropuerto_terminal_puerta
+-- =========================================================
+
+/* Auditor (idusuario válido en tu base) */
+SET @auditor := 1;
+
+/* Detectar IDs de dos aeropuertos reales (de tus inserts) para pruebas puntuales */
+SELECT idaeropuerto INTO @id_eze FROM Aerolinea.aeropuerto WHERE tag='EZE' AND eliminado_en IS NULL LIMIT 1;
+SELECT idaeropuerto INTO @id_aep FROM Aerolinea.aeropuerto WHERE tag='AEP' AND eliminado_en IS NULL LIMIT 1;
+
+SELECT 'AEROPUERTOS DETECTADOS' AS info, @id_eze AS id_EZE, @id_aep AS id_AEP;
+
+/* =========================================================
+   1) ALTA de AEROPUERTO (nuevo: FTE - El Calafate)
+   ========================================================= */
+SET @out_aero := NULL; SET @out_term := NULL; SET @out_gate := NULL;
+
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  /* tipo/accion */ 'AEROPUERTO','A',
+  /* aeropuerto */  NULL, 'FTE', 'Aeropuerto Internacional Comandante A. Tola', 'El Calafate', -50.280300, -72.053100, 'America/Argentina/Buenos_Aires', 1,
+  /* terminal */    NULL, NULL, NULL, NULL,
+  /* puerta */      NULL, NULL, NULL, NULL,
+  /* auditor */     @auditor,
+  /* outs */        @out_aero, @out_term, @out_gate
+);
+SELECT 'ALTA AEROPUERTO FTE' AS paso, @out_aero AS idaeropuerto;
+
+/* Verificación aeropuerto creado */
+SELECT * FROM Aerolinea.aeropuerto WHERE idaeropuerto=@out_aero;
+
+/* =========================================================
+   2) ALTA de TERMINAL en FTE
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','A',
+  /* aeropuerto */  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  /* terminal */    NULL, 'Terminal Única', 1, @out_aero,
+  /* puerta */      NULL, NULL, NULL, NULL,
+  @auditor,
+  @aero_out2, @out_term, @gate_out2
+);
+SELECT 'ALTA TERMINAL FTE' AS paso, @out_term AS idterminal;
+
+SELECT * FROM Aerolinea.terminal WHERE idterminal=@out_term;
+
+/* =========================================================
+   3) ALTA de PUERTA en FTE
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','A',
+  /* aeropuerto */  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  /* terminal */    NULL, NULL, NULL, NULL,
+  /* puerta */      NULL, 'FTE-G01', 1, @out_aero,
+  @auditor,
+  @aero_out3, @term_out3, @out_gate
+);
+SELECT 'ALTA PUERTA FTE' AS paso, @out_gate AS idpuerta;
+
+SELECT * FROM Aerolinea.puerta WHERE idpuerta=@out_gate;
+
+/* =========================================================
+   4) MODIFICAR AEROPUERTO FTE (cambiar nombre/ciudad)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'AEROPUERTO','M',
+  @out_aero, NULL, 'Aeropuerto Intl. El Calafate', 'El Calafate (Santa Cruz)', NULL, NULL, NULL, 1,
+  NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_outM, @term_outM, @gate_outM
+);
+SELECT 'MODIFICAR AEROPUERTO FTE' AS paso, @aero_outM AS idaeropuerto;
+SELECT * FROM Aerolinea.aeropuerto WHERE idaeropuerto=@aero_outM;
+
+/* =========================================================
+   5) MODIFICAR TERMINAL FTE (renombrar)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','M',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  @out_term, 'Terminal Principal', 1, @out_aero,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_outTM, @term_outM2, @gate_outTM
+);
+SELECT 'MODIFICAR TERMINAL FTE' AS paso, @term_outM2 AS idterminal;
+SELECT * FROM Aerolinea.terminal WHERE idterminal=@term_outM2;
+
+/* =========================================================
+   6) MODIFICAR PUERTA FTE (cambiar código)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','M',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @out_gate, 'FTE-G02', 1, @out_aero,
+  @auditor,
+  @aero_outPM, @term_outPM, @gate_outM
+);
+SELECT 'MODIFICAR PUERTA FTE' AS paso, @gate_outM AS idpuerta;
+SELECT * FROM Aerolinea.puerta WHERE idpuerta=@gate_outM;
+
+/* =========================================================
+   7) BAJA LÓGICA de PUERTA (FTE-G02)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','B',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @gate_outM, NULL, NULL, @out_aero,
+  @auditor,
+  @aero_outPB, @term_outPB, @gate_outB
+);
+SELECT 'BAJA PUERTA FTE' AS paso, @gate_outB AS idpuerta;
+SELECT idpuerta, codigo, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.puerta
+WHERE idpuerta=@gate_outB;
+
+/* =========================================================
+   8) BAJA LÓGICA de TERMINAL (FTE)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','B',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  @out_term, NULL, NULL, @out_aero,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_outTB, @term_outB, @gate_outTB
+);
+SELECT 'BAJA TERMINAL FTE' AS paso, @term_outB AS idterminal;
+SELECT idterminal, nombre, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.terminal
+WHERE idterminal=@term_outB;
+
+/* =========================================================
+   9) BAJA LÓGICA de AEROPUERTO (FTE)
+      (el SP además inactiva terminales/puertas del aeropuerto)
+   ========================================================= */
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'AEROPUERTO','B',
+  @out_aero, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+  NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_outB, @term_outB2, @gate_outB2
+);
+SELECT 'BAJA AEROPUERTO FTE' AS paso, @aero_outB AS idaeropuerto;
+SELECT idaeropuerto, tag, nombre, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.aeropuerto
+WHERE idaeropuerto=@aero_outB;
+
+/* =========================================================
+   10) PRUEBAS en aeropuerto EXISTENTE (AEP)
+       - Alta terminal única de prueba
+       - Alta puerta única de prueba
+       - Modificación
+       - Baja
+   ========================================================= */
+
+-- 10.1 Alta Terminal en AEP con nombre único
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','A',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL, CONCAT('Terminal Prueba ', DATE_FORMAT(NOW(), '%H%i%s')), 1, @id_aep,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_aep_out, @term_aep, @gate_dummy
+);
+SELECT 'ALTA TERMINAL AEP' AS paso, @term_aep AS idterminal;
+SELECT * FROM Aerolinea.terminal WHERE idterminal=@term_aep;
+
+-- 10.2 Alta Puerta en AEP con código único
+SET @code_gate := CONCAT('AEP-G', DATE_FORMAT(NOW(), '%H%i'));
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','A',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  NULL, @code_gate, 1, @id_aep,
+  @auditor,
+  @aero_aep2, @term_aep2, @gate_aep
+);
+SELECT 'ALTA PUERTA AEP' AS paso, @gate_aep AS idpuerta, @code_gate AS codigo;
+SELECT * FROM Aerolinea.puerta WHERE idpuerta=@gate_aep;
+
+-- 10.3 Modificar Terminal AEP
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','M',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  @term_aep, CONCAT('Terminal Test ', DATE_FORMAT(NOW(), '%H%i%s')), 1, @id_aep,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_aep3, @term_aepM, @gate_aepM
+);
+SELECT 'MODIFICAR TERMINAL AEP' AS paso, @term_aepM AS idterminal;
+SELECT * FROM Aerolinea.terminal WHERE idterminal=@term_aepM;
+
+-- 10.4 Modificar Puerta AEP
+SET @code_gate2 := CONCAT(@code_gate, '-X');
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','M',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @gate_aep, @code_gate2, 1, @id_aep,
+  @auditor,
+  @aero_aep4, @term_aep4, @gate_aepM2
+);
+SELECT 'MODIFICAR PUERTA AEP' AS paso, @gate_aepM2 AS idpuerta, @code_gate2 AS codigo;
+SELECT * FROM Aerolinea.puerta WHERE idpuerta=@gate_aepM2;
+
+-- 10.5 Baja Terminal AEP (la creada en 10.1)
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'TERMINAL','B',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  @term_aepM, NULL, NULL, @id_aep,
+  NULL,NULL,NULL,NULL,
+  @auditor,
+  @aero_aep5, @term_aepB, @gate_aepB
+);
+SELECT 'BAJA TERMINAL AEP' AS paso, @term_aepB AS idterminal;
+SELECT idterminal, nombre, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.terminal WHERE idterminal=@term_aepB;
+
+-- 10.6 Baja Puerta AEP (la creada en 10.2)
+CALL Aerolinea.sp_abm_aeropuerto_terminal_puerta(
+  'PUERTA','B',
+  NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL,NULL,
+  @gate_aepM2, NULL, NULL, @id_aep,
+  @auditor,
+  @aero_aep6, @term_aep6, @gate_aepB2
+);
+SELECT 'BAJA PUERTA AEP' AS paso, @gate_aepB2 AS idpuerta;
+SELECT idpuerta, codigo, activo, eliminado_en, eliminado_motivo
+FROM Aerolinea.puerta WHERE idpuerta=@gate_aepB2;
+
+-- FIN DEL TEST
