@@ -5,7 +5,7 @@
 > **Autor:** Agustín Tejero  
 > **Diseño:** Modelo Entidad–Relación normalizado (3FN) + auditoría + eliminación lógica (soft delete)
 
-**Keywords (ATS/Recruiters):** MySQL, SQL, Relational Modeling, Normalization (3NF), ERD, Indexes, Constraints (PK/FK), RBAC (roles & permissions), Stored Procedures, Triggers, Views, Audit Fields, Soft Delete.
+Tech stack / Topics:MySQL, SQL, Relational Modeling, Normalization (3NF), ERD, Indexes, Constraints (PK/FK), RBAC (roles & permissions), Stored Procedures, Triggers, Views, Audit Fields, Soft Delete.
 
 ---
 
